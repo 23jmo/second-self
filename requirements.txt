@@ -1,0 +1,9 @@
+firebase-admin
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+tavily-python
+anthropic
+python-dotenv
+requests

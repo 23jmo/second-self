@@ -1,0 +1,31 @@
+# Secrets
+.env
+firebase-service-account.json
+
+# Output / cache
+output/
+!output/.gitkeep
+
+# Memory
+.claude-memory.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
