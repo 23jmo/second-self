@@ -25,7 +25,7 @@ from src.connectors.calendar import get_calendar_events
 from src.synthesis.profile import build_second_self
 from src.models.schemas import OnboardRequest, OnboardResponse
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 log = logging.getLogger("second-self")
 logging.basicConfig(level=logging.INFO)
