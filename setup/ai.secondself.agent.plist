@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.secondself.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/secondself/second-self/agent-server/server.py</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/secondself/second-self/agent-server/agent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/secondself/second-self/agent-server/agent.err</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DISPLAY</key>
+        <string>:0</string>
+    </dict>
+</dict>
+</plist>
