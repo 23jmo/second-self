@@ -5,11 +5,12 @@ Must run in the GUI session context (not via SSH or su) for display access.
 """
 
 import json
+import os
 import subprocess
 import base64
 import io
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 PORT = 8421
 
@@ -73,20 +74,6 @@ def open_app(name: str) -> dict:
     }
 
 
-def navigate_url(url: str) -> dict:
-    """Navigate to a URL using the 'open' command. No AppleScript permissions needed."""
-    result = subprocess.run(
-        ["open", "-a", "Google Chrome", url],
-        capture_output=True, text=True, timeout=10
-    )
-    return {
-        "status": "ok" if result.returncode == 0 else "error",
-        "action": "navigate",
-        "url": url,
-        "stderr": result.stderr.strip() if result.returncode != 0 else None,
-    }
-
-
 def move_mouse(x: int, y: int) -> dict:
     """Move mouse to coordinates without clicking."""
     import pyautogui
@@ -101,6 +88,35 @@ def get_screen_size() -> dict:
     return {"width": w, "height": h}
 
 
+def run_browser(cmd: str, *args: str, timeout: int = 30) -> dict:
+    """Shell out to browser-use CLI. Returns parsed JSON or raw text."""
+    full_cmd = ["browser-use", "--cdp-url", "http://localhost:9222", cmd] + list(args)
+    print(f"[agent-server] browser {cmd} {' '.join(args)}")
+    env = os.environ.copy()
+    env.setdefault("HOME", os.path.expanduser("~"))
+    try:
+        result = subprocess.run(
+            full_cmd, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except FileNotFoundError:
+        return {"status": "error", "error": "browser-use not installed. Run: pip install 'browser-use[cli]'"}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": f"browser command timed out after {timeout}s"}
+
+    if result.returncode != 0:
+        return {"status": "error", "stderr": result.stderr.strip()}
+
+    # Parse stdout as JSON if possible, else return raw text
+    stdout = result.stdout.strip()
+    try:
+        data = json.loads(stdout)
+        return {"status": "ok", "data": data}
+    except json.JSONDecodeError:
+        if len(stdout) > 8000:
+            stdout = stdout[:8000] + "\n... (truncated)"
+        return {"status": "ok", "data": stdout}
+
+
 # Route table: endpoint path -> handler function
 TOOLS = {
     "/tool/screenshot": lambda body: {"image": take_screenshot()},
@@ -110,16 +126,28 @@ TOOLS = {
     "/tool/hotkey": lambda body: hotkey(*body["keys"]),
     "/tool/scroll": lambda body: scroll(body.get("dx", 0), body.get("dy", 0)),
     "/tool/open_app": lambda body: open_app(body["name"]),
-    "/tool/navigate": lambda body: navigate_url(body["url"]),
     "/tool/move": lambda body: move_mouse(body["x"], body["y"]),
     "/tool/screen_size": lambda body: get_screen_size(),
+    "/browser/goto": lambda body: run_browser("open", body["url"]),
+    "/browser/click": lambda body: run_browser("click", str(body["ref"])),
+    "/browser/fill": lambda body: run_browser("input", str(body["ref"]), body["text"]),
+    "/browser/snapshot": lambda body: run_browser("state"),
+    "/browser/screenshot": lambda body: run_browser("screenshot"),
+    "/browser/text": lambda body: run_browser("get", "text"),
+    "/browser/press": lambda body: run_browser("keys", body["key"]),
 }
 
 
 class AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            self._respond(200, {"status": "ok", "tools": list(TOOLS.keys())})
+            # Check browser-use CLI
+            bu_check = run_browser("doctor", timeout=10)
+            self._respond(200, {
+                "status": "ok",
+                "tools": list(TOOLS.keys()),
+                "browser_use": bu_check,
+            })
         elif self.path == "/stream":
             self._stream_screen()
         elif self.path == "/view":
@@ -185,7 +213,6 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _respond(self, code: int, data: dict):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 
@@ -196,7 +223,15 @@ class AgentHandler(BaseHTTPRequestHandler):
 def main():
     print(f"[agent-server] Starting on port {PORT}")
     print(f"[agent-server] Available tools: {list(TOOLS.keys())}")
-    server = HTTPServer(("0.0.0.0", PORT), AgentHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), AgentHandler)
+
+    # Verify browser-use CLI is available
+    bu_check = run_browser("doctor", timeout=10)
+    if bu_check.get("status") == "error":
+        print(f"[agent-server] WARNING: browser-use not available: {bu_check.get('error', bu_check.get('stderr', 'unknown'))}")
+    else:
+        print(f"[agent-server] browser-use: ready")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -27,6 +27,12 @@
     <dict>
         <key>DISPLAY</key>
         <string>:0</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/Users/secondself/.npm-global/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/secondself</string>
+        <key>TMPDIR</key>
+        <string>/tmp</string>
     </dict>
 </dict>
 </plist>
