@@ -49,7 +49,7 @@ sudo -u "$SECOND_USER" /usr/bin/python3 -m pip install --user --break-system-pac
 }
 echo ""
 
-# ─── Step 4: Install agent-browser ───
+# ─── Step 4: Install browser-use CLI ───
 echo "[4/10] Installing browser-use CLI..."
 sudo -H -u "$SECOND_USER" /usr/bin/python3 -m pip install --user --break-system-packages \
     "browser-use[cli]" 2>&1 | tail -3 || {
@@ -161,15 +161,15 @@ else
     echo "    Check: cat $SECOND_HOME/second-self/agent-server/agent.err"
 fi
 
-# Check agent-browser
+# Check browser-use
 echo ""
-echo "  agent-browser:"
-AB_VERSION=$(sudo -u "$SECOND_USER" agent-browser --version 2>/dev/null || echo "not found")
-if echo "$AB_VERSION" | grep -qi "agent-browser\|version\|[0-9]"; then
-    echo "    ✅ Installed — $AB_VERSION"
+echo "  browser-use CLI:"
+BU_CHECK=$(sudo -H -u "$SECOND_USER" bash -c 'cd /tmp && browser-use doctor' 2>/dev/null || echo "not found")
+if echo "$BU_CHECK" | grep -qi "ok\|ready\|chromium\|[0-9]"; then
+    echo "    ✅ Installed"
 else
     echo "    ❌ Not found or not working"
-    echo "    Try: sudo -H -u $SECOND_USER npm install -g agent-browser"
+    echo "    Try: sudo -H -u $SECOND_USER pip install 'browser-use[cli]'"
 fi
 
 # Check VNC connectivity
@@ -204,5 +204,5 @@ echo "  To test the agent:"
 echo "    curl -s http://localhost:8421/health"
 echo "    bash setup/test-agent.sh"
 echo ""
-echo "  agent-browser: installed for browser automation"
+echo "  browser-use: installed for browser automation via CDP"
 echo "========================================="

@@ -1,13 +1,13 @@
 #!/bin/bash
 # Quick test script for the Agent Server
-# Tests both browser (agent-browser) and desktop (PyAutoGUI) endpoints
+# Tests both browser (browser-use via CDP) and desktop (PyAutoGUI) endpoints
 
 AGENT_URL="http://localhost:8421"
 
 echo "=== Agent Server Test ==="
 echo ""
 
-# Health check (now includes agent-browser status)
+# Health check (includes browser-use status)
 echo "1. Health check..."
 HEALTH=$(curl -s "$AGENT_URL/health")
 echo "$HEALTH" | python3 -m json.tool 2>/dev/null || echo "  ❌ Agent Server not responding at $AGENT_URL"
@@ -57,6 +57,6 @@ echo "  - Chrome should show Google (from browser test)"
 echo "  - Notes should be open (from desktop test)"
 echo ""
 echo "If browser tests failed, verify:"
-echo "  1. agent-browser is installed: agent-browser --version"
-echo "  2. Playwright Chromium is installed: npx playwright install chromium"
-echo "  3. PATH includes npm global bin dir in the LaunchAgent plist"
+echo "  1. browser-use is installed: pip show browser-use"
+echo "  2. Chrome is running with CDP: curl -s http://localhost:9222/json/version"
+echo "  3. Chrome LaunchAgent is loaded: launchctl list | grep secondself.chrome"
