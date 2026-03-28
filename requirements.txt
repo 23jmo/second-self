@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+firebase-admin
+requests
+httpx
+anthropic
+claude-agent-sdk
+python-dotenv
+pydantic
+beautifulsoup4
