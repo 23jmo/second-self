@@ -25,42 +25,96 @@ DEDALUS_MODEL = os.environ.get("DEDALUS_MODEL", "gpt-4o")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # Tool definitions for Dedalus (OpenAI function calling format)
-COMPUTER_USE_TOOLS = [
+# Browser tools (agent-browser, ref-based)
+BROWSER_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "screenshot",
-            "description": "Take a screenshot of the desktop to see what's on screen",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "click",
-            "description": "Click at x,y pixel coordinates on the screen",
+            "name": "browser_goto",
+            "description": "Navigate the browser to a URL. Use for any web task.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "x": {"type": "integer", "description": "X coordinate"},
-                    "y": {"type": "integer", "description": "Y coordinate"},
+                    "url": {"type": "string", "description": "URL to navigate to"},
                 },
-                "required": ["x", "y"],
+                "required": ["url"],
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "double_click",
-            "description": "Double-click at x,y pixel coordinates",
+            "name": "browser_click",
+            "description": "Click an element on the web page by its ref ID (from browser_snapshot). Use @ref format.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "x": {"type": "integer", "description": "X coordinate"},
-                    "y": {"type": "integer", "description": "Y coordinate"},
+                    "ref": {"type": "string", "description": "Element ref from snapshot, e.g. 'e3'"},
                 },
-                "required": ["x", "y"],
+                "required": ["ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_fill",
+            "description": "Fill a text input on the web page by its ref ID with the given text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {"type": "string", "description": "Element ref from snapshot, e.g. 'e5'"},
+                    "text": {"type": "string", "description": "Text to type into the field"},
+                },
+                "required": ["ref", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_snapshot",
+            "description": "Get the current page structure with element refs. Call this before clicking or filling elements, and after any navigation.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_text",
+            "description": "Get the text content of the current web page.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_press",
+            "description": "Press a keyboard key in the browser (Enter, Tab, Escape, etc.).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key to press, e.g. 'Enter', 'Tab'"},
+                },
+                "required": ["key"],
+            },
+        },
+    },
+]
+
+# Desktop tools (PyAutoGUI, for native macOS apps only)
+DESKTOP_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "open_app",
+            "description": "Open a macOS application by name. Use for native apps only (Notes, Finder, Calendar). NOT for web browsing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Application name, e.g. 'Notes'"},
+                },
+                "required": ["name"],
             },
         },
     },
@@ -68,7 +122,7 @@ COMPUTER_USE_TOOLS = [
         "type": "function",
         "function": {
             "name": "type_text",
-            "description": "Type text on the keyboard",
+            "description": "Type text using the keyboard. Use for native macOS apps only, not for web pages (use browser_fill instead).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -82,7 +136,7 @@ COMPUTER_USE_TOOLS = [
         "type": "function",
         "function": {
             "name": "hotkey",
-            "description": "Press a keyboard shortcut (e.g. command+t for new tab)",
+            "description": "Press a keyboard shortcut in a native macOS app (e.g. command+t for new tab)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -99,50 +153,8 @@ COMPUTER_USE_TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "open_app",
-            "description": "Open a macOS application by name",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Application name, e.g. 'Safari'"},
-                },
-                "required": ["name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "navigate_url",
-            "description": "Navigate Safari to a specific URL",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL to navigate to"},
-                },
-                "required": ["url"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll",
-            "description": "Scroll the screen",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "dy": {"type": "integer", "description": "Vertical scroll amount (positive=up, negative=down)"},
-                },
-                "required": ["dy"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "move_mouse",
-            "description": "Move the mouse cursor to x,y coordinates without clicking",
+            "name": "click",
+            "description": "Click at x,y pixel coordinates on the screen. Use ONLY for native macOS apps, never for web pages.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -153,19 +165,48 @@ COMPUTER_USE_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "screenshot",
+            "description": "Take a screenshot of the full desktop. Use sparingly and only for native macOS apps. For web pages, use browser_snapshot instead.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scroll",
+            "description": "Scroll the screen in a native macOS app.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "dy": {"type": "integer", "description": "Vertical scroll amount (positive=up, negative=down)"},
+                },
+                "required": ["dy"],
+            },
+        },
+    },
 ]
+
+ALL_TOOLS = BROWSER_TOOLS + DESKTOP_TOOLS
 
 # Map tool names to Agent Server endpoints
 TOOL_ENDPOINT_MAP = {
+    # Browser tools (agent-browser)
+    "browser_goto": "/browser/goto",
+    "browser_click": "/browser/click",
+    "browser_fill": "/browser/fill",
+    "browser_snapshot": "/browser/snapshot",
+    "browser_text": "/browser/text",
+    "browser_press": "/browser/press",
+    # Desktop tools (PyAutoGUI)
     "screenshot": "/tool/screenshot",
     "click": "/tool/click",
-    "double_click": "/tool/double_click",
     "type_text": "/tool/type",
     "hotkey": "/tool/hotkey",
     "open_app": "/tool/open_app",
-    "navigate_url": "/tool/navigate",
     "scroll": "/tool/scroll",
-    "move_mouse": "/tool/move",
 }
 
 
@@ -265,10 +306,30 @@ def run_agent_loop(task: str, max_steps: int = 15) -> list:
     """
     actions = []
     system_prompt = (
-        "You are controlling a macOS desktop. You can take screenshots, click, type, "
-        "open apps, navigate URLs, and scroll. Complete the user's task step by step. "
-        "Start by taking a screenshot to see what's on screen, then proceed with actions. "
-        "After each action, take another screenshot to verify the result before proceeding."
+        "You are controlling a macOS desktop with two types of tools:\n"
+        "\n"
+        "BROWSER TOOLS (for any web task — searching, reading pages, filling forms):\n"
+        "  browser_goto(url) — navigate to a URL\n"
+        "  browser_snapshot() — get page elements with refs (ALWAYS call this before clicking/filling)\n"
+        "  browser_click(ref) — click an element by its ref from snapshot\n"
+        "  browser_fill(ref, text) — fill a text field by its ref\n"
+        "  browser_press(key) — press a key (Enter, Tab, etc.)\n"
+        "  browser_text() — get the page text content\n"
+        "\n"
+        "DESKTOP TOOLS (ONLY for native macOS apps like Notes, Finder, Calendar):\n"
+        "  open_app(name) — open a macOS application\n"
+        "  type_text(text) — type on the keyboard\n"
+        "  hotkey(keys) — keyboard shortcut\n"
+        "  click(x, y) — click at pixel coordinates\n"
+        "  screenshot() — capture the desktop\n"
+        "\n"
+        "RULES:\n"
+        "- For ANY web task, use browser_* tools exclusively.\n"
+        "- For native macOS apps, use desktop tools.\n"
+        "- NEVER mix browser and desktop tools in the same step.\n"
+        "- ALWAYS call browser_snapshot() after navigation to get fresh element refs.\n"
+        "- Element refs (like @e3) become stale after page changes — re-snapshot.\n"
+        "Complete the user's task step by step."
     )
 
     messages = [
@@ -278,7 +339,7 @@ def run_agent_loop(task: str, max_steps: int = 15) -> list:
 
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
-        response = call_dedalus(messages, tools=COMPUTER_USE_TOOLS)
+        response = call_dedalus(messages, tools=ALL_TOOLS)
 
         if "error" in response:
             actions.append({"step": step + 1, "error": response["error"]})
@@ -362,7 +423,7 @@ def handle_anticipatory_setup(profile: dict) -> list:
         f"Set up this desktop for {name}"
         f"{f', {title} at {company}' if title and company else ''}. "
         f"Their interests include: {', '.join(interests) if interests else 'general technology'}. "
-        "Open Safari with 2-3 tabs related to their interests. "
+        "Open Chrome with 2-3 tabs related to their interests. "
         "Open Notes and create a new note titled 'Tasks for today' with 3 relevant task suggestions. "
         "Make the desktop look like it belongs to this person."
     )
@@ -467,7 +528,7 @@ def main():
     print(f"[orchestrator] Dedalus API at {DEDALUS_API_URL}")
     print(f"[orchestrator] Model: {DEDALUS_MODEL}")
 
-    server = HTTPServer(("0.0.0.0", PORT), OrchestratorHandler)
+    server = HTTPServer(("127.0.0.1", PORT), OrchestratorHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

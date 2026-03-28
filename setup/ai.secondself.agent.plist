@@ -27,6 +27,16 @@
     <dict>
         <key>DISPLAY</key>
         <string>:0</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/Users/secondself/.npm-global/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/secondself</string>
+        <key>TMPDIR</key>
+        <string>/tmp</string>
+        <key>PLAYWRIGHT_BROWSERS_PATH</key>
+        <string>/Users/secondself/Library/Caches/ms-playwright</string>
+        <key>AGENT_BROWSER_HEADED</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>
