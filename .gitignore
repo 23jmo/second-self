@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+*.json
+!.env.example
+!package.json
+.venv/
+venv/
+token_*.json
+firebase-service-account.json
