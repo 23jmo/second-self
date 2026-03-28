@@ -45,3 +45,18 @@ def test_get_gmail_credentials_missing_env(monkeypatch: pytest.MonkeyPatch) -> N
          patch("auth.gmail_auth.load_dotenv"):
         with pytest.raises(EnvironmentError, match="GOOGLE_CLIENT_ID"):
             gauth.get_gmail_credentials()
+
+
+# ---------------------------------------------------------------------------
+# get_gmail_credentials_from_token
+# ---------------------------------------------------------------------------
+
+def test_get_gmail_credentials_from_token() -> None:
+    creds = gauth.get_gmail_credentials_from_token("ya29-test-token")
+    assert isinstance(creds, Credentials)
+    assert creds.token == "ya29-test-token"
+
+
+def test_get_gmail_credentials_from_token_no_refresh() -> None:
+    creds = gauth.get_gmail_credentials_from_token("ya29-abc")
+    assert creds.refresh_token is None

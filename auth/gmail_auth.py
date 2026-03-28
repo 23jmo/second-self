@@ -33,6 +33,15 @@ def get_gmail_credentials() -> Credentials:
     )
 
 
+def get_gmail_credentials_from_token(access_token: str) -> Credentials:
+    """Build Gmail API Credentials from a raw Google access token.
+
+    Used with the Firebase JS SDK web auth flow, where the browser provides
+    a standalone access token (no refresh token or client secrets needed).
+    """
+    return Credentials(token=access_token)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     creds = get_gmail_credentials()
