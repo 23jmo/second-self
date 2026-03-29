@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.secondself.vine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Vine Server.app/Contents/MacOS/OSXvnc-server</string>
+        <string>-rfbport</string>
+        <string>5901</string>
+        <string>-rfbnoauth</string>
+        <string>-desktop</string>
+        <string>SecondSelf</string>
+        <string>-swapbuttons</string>
+        <string>-rendezvous</string>
+        <string>y</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/secondself/second-self/vine.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/secondself/second-self/vine.err</string>
+</dict>
+</plist>
