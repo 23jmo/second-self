@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { postChat } from "@/lib/api";
 import type { ActionTaken } from "@/lib/api";
 import MascotFace from "@/components/mascot/MascotFace";
+import { renderMarkdown } from "@/lib/renderMarkdown";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -93,7 +94,13 @@ export default function ChatScreen({ sessionId, name }: ChatScreenProps) {
                   : "bg-gray-100 text-black"
               }`}
             >
-              <p className="text-sm sm:text-base whitespace-pre-wrap">{msg.text}</p>
+              {msg.role === "assistant" ? (
+                <div className="text-sm sm:text-base space-y-2">
+                  {renderMarkdown(msg.text)}
+                </div>
+              ) : (
+                <p className="text-sm sm:text-base whitespace-pre-wrap">{msg.text}</p>
+              )}
               {msg.actions && msg.actions.length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-2">
                   {msg.actions.map((action, j) => (
