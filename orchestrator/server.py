@@ -24,6 +24,10 @@ import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
 
+# Ensure sibling modules (productivity_tools) are importable regardless of
+# how this file is invoked (direct script vs uvicorn module import).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -700,6 +704,13 @@ async def lifespan(application: FastAPI):
             print("[orchestrator] No Google auth session found. Productivity tools will need auth first.")
     except Exception as e:
         print(f"[orchestrator] Could not load Google auth: {e}. Productivity tools disabled.")
+
+    # Clear stale browser-use session from previous app run
+    try:
+        result = await asyncio.to_thread(call_agent_server, "/browser/close", {})
+        print(f"[orchestrator] Browser session cleared on startup")
+    except Exception:
+        print("[orchestrator] Could not clear browser session (agent-server may not be running)")
 
     print(f"[orchestrator] Starting on port {PORT}")
     print(f"[orchestrator] Agent Server expected at {AGENT_SERVER_URL}")

@@ -10,7 +10,8 @@ final class ChatViewModel: ObservableObject {
     @Published var twinState: TwinState = .idle
     @Published var isConnected: Bool = false
     @Published var inputText: String = ""
-    @Published var isVNCExpanded: Bool = false
+    /// VNC feed stays visible once the agent starts working, until user dismisses.
+    @Published var showVNCFeed: Bool = false
 
     // The last tool action name from SSE events, shown in VNC bottom bar
     @Published var currentToolAction: String = ""
@@ -50,6 +51,12 @@ final class ChatViewModel: ObservableObject {
             timestamp: Date()
         )
         messages.append(welcome)
+    }
+
+    // MARK: - VNC Feed
+
+    func dismissVNCFeed() {
+        showVNCFeed = false
     }
 
     // MARK: - Send Message
@@ -101,6 +108,9 @@ final class ChatViewModel: ObservableObject {
                let stateStr = json["state"] as? String,
                let newState = TwinState(rawValue: stateStr) {
                 twinState = newState
+                if newState == .working {
+                    showVNCFeed = true
+                }
                 if newState == .complete || newState == .idle {
                     currentToolAction = ""
                 }

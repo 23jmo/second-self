@@ -248,8 +248,8 @@ cd SecondSelf && swift build && swift run
 ### Prerequisites
 - secondself user created and logged in once (for GUI session)
 - Screen Recording permission granted for python3 in secondself's session
-- Vine Server installed and running on :5901
-- API keys in `.env` (DEDALUS_API_KEY, TAVILY_API_KEY)
+- Vine Server installed and running on :5901 (optional, for TigerVNC debugging)
+- API keys in `.env` (ANTHROPIC_API_KEY, TAVILY_API_KEY)
 
 ### VNC sanity check
 ```bash
