@@ -17,7 +17,8 @@ let package = Package(
             path: ".",
             exclude: ["Info.plist", "Package.swift", "Tests"],
             resources: [
-                .process("Assets.xcassets")
+                .process("Assets.xcassets"),
+                .copy("Resources")
             ]
         ),
     ]

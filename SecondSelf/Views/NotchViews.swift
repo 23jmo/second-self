@@ -136,10 +136,6 @@ struct ExpandedNotchContent: View {
 
     private var statusMiniContent: some View {
         HStack(spacing: 12) {
-            // Mascot
-            TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
-                .frame(width: 32, height: 32)
-
             // Status text with crossfade
             ZStack {
                 Text(displayText)
@@ -155,7 +151,8 @@ struct ExpandedNotchContent: View {
             // Status indicator
             statusIndicator
         }
-        .padding(.horizontal, 14)
+        .padding(.leading, 14)
+        .padding(.trailing, 14)
         .frame(width: 360, height: 56)
         .contentShape(Rectangle())
         .onTapGesture { chatViewModel.onNotchTap?() }
@@ -187,8 +184,13 @@ struct ExpandedNotchContent: View {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // Input bar
-            ChatInputBar(
+            // Mascot + Input bar
+            HStack(alignment: .bottom, spacing: 6) {
+                MascotGIFView(width: 32, height: 42)
+                    .frame(width: 32, height: 42)
+                    .offset(x: -8, y: -4)
+
+                ChatInputBar(
                 text: $chatViewModel.inputText,
                 isEnabled: chatViewModel.twinState != .thinking && chatViewModel.twinState != .working,
                 voiceState: chatViewModel.voiceState,
@@ -199,6 +201,7 @@ struct ExpandedNotchContent: View {
                 onVoiceCancel: { chatViewModel.cancelVoiceRecording() },
                 onPermissionTap: { chatViewModel.requestMicPermission() }
             )
+            }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
             .onAppear { chatViewModel.checkMicPermission() }
