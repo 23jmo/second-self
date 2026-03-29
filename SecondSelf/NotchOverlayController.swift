@@ -25,6 +25,11 @@ final class NotchOverlayController: NSObject {
     // Track current state: 0=compact, 1=status mini, 2=full chat
     private var isExpanded = false
 
+    // Peeping mascot: separate transparent window below the notch
+    private var peepingWindow: NSWindow?
+    private var peepingVisible = false
+    private var hoverTrackingMonitor: Any?
+
     private(set) var authManager: GoogleAuthManager
 
     init(authManager: GoogleAuthManager) {
@@ -69,6 +74,8 @@ final class NotchOverlayController: NSObject {
         installSuggestionObserver()
         installLocalClickMonitor()
         installGlobalClickMonitor()
+        setupPeepingWindow()
+        installHoverTracking()
     }
 
     // MARK: - 3-Stage Toggle
@@ -227,7 +234,7 @@ final class NotchOverlayController: NSObject {
         guard let screen = NSScreen.main else { return .zero }
         let notch = Self.screenNotchFrame(screen)
         let expandedWidth: CGFloat = 420
-        let expandedHeight: CGFloat = 520
+        let expandedHeight: CGFloat = chatViewModel.showVNCFeed ? 720 : 520
 
         return NSRect(
             x: notch.midX - expandedWidth / 2,
@@ -271,10 +278,125 @@ final class NotchOverlayController: NSObject {
         dynamicNotch.windowController?.window?.makeKeyAndOrderFront(nil)
     }
 
+    // MARK: - Peeping Mascot
+
+    private let mascotHeight: CGFloat = 70
+
+    private func setupPeepingWindow() {
+        guard let screen = NSScreen.main else { return }
+        let notchFrame = Self.screenNotchFrame(screen)
+        let mascotWidth: CGFloat = 80
+
+        // Start hidden above the notch bottom edge
+        let windowFrame = NSRect(
+            x: notchFrame.midX - mascotWidth / 2,
+            y: notchFrame.minY,
+            width: mascotWidth,
+            height: mascotHeight
+        )
+
+        let window = NSWindow(
+            contentRect: windowFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.level = .statusBar - 1  // Behind the notch panel
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+        let hostingView = NSHostingView(
+            rootView: PeepingMascot(barHeight: 0, isVisible: true)
+                .frame(width: mascotWidth, height: mascotHeight)
+        )
+        hostingView.layer?.backgroundColor = .clear
+        window.contentView = hostingView
+        window.alphaValue = 0
+        window.orderFront(nil)
+        peepingWindow = window
+    }
+
+    private func installHoverTracking() {
+        hoverTrackingMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved]
+        ) { [weak self] event in
+            guard let self = self, self.chatViewModel.expansionStage == 0 else {
+                if self?.peepingVisible == true {
+                    self?.setPeepingVisible(false)
+                }
+                return
+            }
+            let mouseLocation = NSEvent.mouseLocation
+            let notchRect = self.notchHitRect()
+            let isInNotchArea = notchRect.contains(mouseLocation)
+
+            if isInNotchArea && !self.peepingVisible {
+                self.setPeepingVisible(true)
+            } else if !isInNotchArea && self.peepingVisible {
+                self.setPeepingVisible(false)
+            }
+        }
+
+        // Also track local mouse moved (when our app is active)
+        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            guard let self = self, self.chatViewModel.expansionStage == 0 else {
+                if self?.peepingVisible == true {
+                    self?.setPeepingVisible(false)
+                }
+                return event
+            }
+            let mouseLocation = NSEvent.mouseLocation
+            let notchRect = self.notchHitRect()
+            let isInNotchArea = notchRect.contains(mouseLocation)
+
+            if isInNotchArea && !self.peepingVisible {
+                self.setPeepingVisible(true)
+            } else if !isInNotchArea && self.peepingVisible {
+                self.setPeepingVisible(false)
+            }
+            return event
+        }
+    }
+
+    private func setPeepingVisible(_ visible: Bool) {
+        peepingVisible = visible
+        guard let window = peepingWindow, let screen = NSScreen.main else { return }
+
+        let notchFrame = Self.screenNotchFrame(screen)
+        let mascotWidth: CGFloat = 80
+
+        // Hidden: tucked up behind notch. Visible: peek just the arms + top of head.
+        let hiddenY = notchFrame.minY
+        let visibleY = notchFrame.minY - 30  // Only peek ~30pt below notch edge
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = visible ? 1.0 : 0.0
+            window.animator().setFrame(
+                NSRect(
+                    x: notchFrame.midX - mascotWidth / 2,
+                    y: visible ? visibleY : hiddenY,
+                    width: mascotWidth,
+                    height: mascotHeight
+                ),
+                display: true
+            )
+        }
+
+        // Also nudge the DynamicNotchKit compact size on hover
+        // (DynamicNotchKit doesn't expose a direct resize API, so we skip this for now)
+    }
+
     deinit {
         twinStateCancellable?.cancel()
         autoCollapseTask?.cancel()
         if let m = localClickMonitor { NSEvent.removeMonitor(m) }
         if let m = globalClickMonitor { NSEvent.removeMonitor(m) }
+        if let m = hoverTrackingMonitor { NSEvent.removeMonitor(m) }
+        peepingWindow?.close()
     }
 }

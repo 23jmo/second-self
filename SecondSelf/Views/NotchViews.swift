@@ -237,8 +237,9 @@ struct ExpandedNotchContent: View {
             .padding(.bottom, 12)
             .onAppear { chatViewModel.checkMicPermission() }
         }
-        .frame(width: 420, height: 560)
+        .frame(width: 420, height: chatViewModel.showVNCFeed ? 760 : 560)
         .background(Color.ssNotchBlack)
+        .animation(.ssPanelSpring, value: chatViewModel.showVNCFeed)
     }
 
     private var statusText: String {
