@@ -1,14 +1,14 @@
 """
 Orchestrator — runs in the primary user session on port 8420.
-Bridges between the UI (menubar app), Claude (Anthropic SDK), and the Agent Server.
+Bridges between the UI (menubar app), Gemini, and the Agent Server.
 
 Flow:
   1. UI sends a chat message (POST /chat)
-  2. Orchestrator calls Claude via Anthropic SDK with streaming
-  3. Claude returns text tokens + tool calls (browser, desktop, UI, productivity)
-  4. Orchestrator executes tool calls against Agent Server (port 8421)
+  2. Orchestrator calls Gemini via google-genai SDK with streaming
+  3. Gemini returns text tokens + function calls (browser, desktop, UI, productivity)
+  4. Orchestrator executes function calls against Agent Server (port 8421)
      or runs productivity tools (Gmail, Calendar, etc.) directly
-  5. Returns results to Claude for next step (agentic loop)
+  5. Returns results to Gemini for next step (agentic loop)
   6. SSE events stream back to the SwiftUI notch app in real time
 
 Layer 0: FastAPI with job state machine and SSE streaming.
@@ -28,7 +28,8 @@ from contextlib import asynccontextmanager
 # how this file is invoked (direct script vs uvicorn module import).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import anthropic
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,8 +46,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 PORT = 8420
 AGENT_SERVER_URL = "http://localhost:8421"
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # Google OAuth token for productivity tools (loaded from src/auth on startup)
@@ -112,7 +113,29 @@ UI_TOOLS = [
      }, "required": ["action"]}},
 ]
 
-ALL_TOOLS = BROWSER_TOOLS + DESKTOP_TOOLS + UI_TOOLS + PRODUCTIVITY_TOOLS
+ALL_TOOLS_ANTHROPIC = BROWSER_TOOLS + DESKTOP_TOOLS + UI_TOOLS + PRODUCTIVITY_TOOLS
+
+
+def _anthropic_to_gemini_decl(tool: dict) -> dict:
+    """Convert an Anthropic-format tool definition to a Gemini function declaration."""
+    schema = tool.get("input_schema", {})
+    params = {}
+    if schema.get("properties"):
+        params = {
+            "type": "object",
+            "properties": schema["properties"],
+        }
+        if schema.get("required"):
+            params["required"] = schema["required"]
+    return {
+        "name": tool["name"],
+        "description": tool["description"],
+        "parameters": params if params else None,
+    }
+
+
+# Convert all tools to Gemini function declarations
+GEMINI_FUNCTION_DECLARATIONS = [_anthropic_to_gemini_decl(t) for t in ALL_TOOLS_ANTHROPIC]
 
 # Map tool names to Agent Server endpoints
 TOOL_ENDPOINT_MAP = {
@@ -193,71 +216,76 @@ def call_agent_server(endpoint: str, body: dict | None = None, method: str = "PO
 
 
 # ---------------------------------------------------------------------------
-# Anthropic SDK — streaming helper
+# Gemini SDK — client + non-streaming helper
 # ---------------------------------------------------------------------------
 
-_anthropic_client: anthropic.AsyncAnthropic | None = None
+_gemini_client: genai.Client | None = None
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    return _anthropic_client
+def _get_client() -> genai.Client:
+    global _gemini_client
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _gemini_client
 
 
-async def call_claude_streaming(messages: list, system: str, tools: list | None = None):
+async def call_gemini(
+    contents: list,
+    system: str,
+    tools: list[dict] | None = None,
+) -> tuple[list, str]:
     """
-    Call Claude via Anthropic SDK with streaming.
-    Yields (event_type, data) tuples compatible with the existing SSE layer:
-      - ("token", {"text": "..."})  — individual text chunks
-      - ("_tool_use", {"id": "...", "name": "...", "input": {...}})  — completed tool call
-      - ("_done", {"stop_reason": "..."})  — end of turn
-      - ("error", {"message": "..."})  — error
+    Call Gemini and return (response_parts, finish_reason).
+
+    response_parts is a list of dicts, each either:
+      - {"type": "text", "text": "..."}
+      - {"type": "function_call", "id": "...", "name": "...", "args": {...}}
     """
-    if not ANTHROPIC_API_KEY:
-        yield ("error", {"message": "ANTHROPIC_API_KEY not set"})
-        return
+    if not GEMINI_API_KEY:
+        return [], "error"
 
     client = _get_client()
-    kwargs: dict = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": 4096,
-        "system": system,
-        "messages": messages,
+
+    config: dict = {
+        "temperature": 0.7,
+        "max_output_tokens": 4096,
+        "system_instruction": system,
     }
     if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = {"type": "auto"}
+        config["tools"] = [types.Tool(function_declarations=tools)]
+        config["tool_config"] = types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
+        )
 
     try:
-        async with client.messages.stream(**kwargs) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta":
-                    if hasattr(event.delta, "text"):
-                        yield ("token", {"text": event.delta.text})
-                    elif hasattr(event.delta, "partial_json"):
-                        pass  # tool input accumulating, handled at block stop
+        response = await client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=config,
+        )
 
-                elif event.type == "content_block_stop":
-                    block = stream.current_message_snapshot.content[event.index]
-                    if block.type == "tool_use":
-                        yield ("_tool_use", {
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        })
+        parts = []
+        for part in response.candidates[0].content.parts:
+            if part.text:
+                parts.append({"type": "text", "text": part.text})
+            elif part.function_call:
+                fc = part.function_call
+                parts.append({
+                    "type": "function_call",
+                    "id": getattr(fc, "id", None) or uuid.uuid4().hex[:8],
+                    "name": fc.name,
+                    "args": dict(fc.args) if fc.args else {},
+                })
 
-            # After stream completes, yield the stop reason
-            final = await stream.get_final_message()
-            yield ("_done", {"stop_reason": final.stop_reason})
+        finish = response.candidates[0].finish_reason
+        # Gemini finish reasons: STOP, MAX_TOKENS, SAFETY, RECITATION, OTHER
+        stop_reason = "end_turn" if str(finish) == "FinishReason.STOP" else "tool_use"
 
-    except anthropic.RateLimitError:
-        yield ("error", {"message": "Claude API rate limited. Try again later."})
-    except anthropic.APITimeoutError:
-        yield ("error", {"message": "Claude API request timed out."})
+        return parts, stop_reason
+
     except Exception as e:
-        yield ("error", {"message": f"Claude streaming error: {e}"})
+        print(f"[orchestrator] Gemini error: {e}")
+        return [{"type": "text", "text": f"Error: {e}"}], "error"
 
 
 # ---------------------------------------------------------------------------
@@ -368,9 +396,43 @@ SYSTEM_PROMPT = (
 # Agent loop — non-streaming (backward compat for /command)
 # ---------------------------------------------------------------------------
 
+def _build_gemini_contents(messages: list) -> list:
+    """Convert our internal message format to Gemini contents format."""
+    contents = []
+    for msg in messages:
+        role = msg["role"]
+        gemini_role = "user" if role == "user" else "model"
+
+        if isinstance(msg["content"], str):
+            contents.append(types.Content(
+                role=gemini_role,
+                parts=[types.Part(text=msg["content"])],
+            ))
+        elif isinstance(msg["content"], list):
+            parts = []
+            for block in msg["content"]:
+                if block.get("type") == "text":
+                    parts.append(types.Part(text=block["text"]))
+                elif block.get("type") == "function_call":
+                    parts.append(types.Part(function_call=types.FunctionCall(
+                        name=block["name"],
+                        args=block.get("args", {}),
+                        id=block.get("id"),
+                    )))
+                elif block.get("type") == "function_response":
+                    parts.append(types.Part.from_function_response(
+                        name=block["name"],
+                        response=json.loads(block["content"]) if isinstance(block["content"], str) else block["content"],
+                        id=block.get("id"),
+                    ))
+            if parts:
+                contents.append(types.Content(role=gemini_role, parts=parts))
+    return contents
+
+
 async def run_agent_loop(task: str, max_steps: int = 15) -> list:
     """
-    Run the agentic loop: send task to Claude, execute tool calls, repeat.
+    Run the agentic loop: send task to Gemini, execute function calls, repeat.
     Returns a list of actions taken.
     """
     actions: list = []
@@ -379,44 +441,39 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
 
-        # Collect the full response
-        text_content = ""
-        tool_calls = []
-        stop_reason = None
-        had_error = False
+        contents = _build_gemini_contents(messages)
+        response_parts, stop_reason = await call_gemini(
+            contents, SYSTEM_PROMPT, tools=GEMINI_FUNCTION_DECLARATIONS,
+        )
 
-        async for event_type, event_data in call_claude_streaming(messages, SYSTEM_PROMPT, tools=ALL_TOOLS):
-            if event_type == "token":
-                text_content += event_data["text"]
-            elif event_type == "_tool_use":
-                tool_calls.append(event_data)
-            elif event_type == "_done":
-                stop_reason = event_data["stop_reason"]
-            elif event_type == "error":
-                actions.append({"step": step + 1, "error": event_data["message"]})
-                had_error = True
-                break
-
-        if had_error:
+        if stop_reason == "error":
+            actions.append({"step": step + 1, "error": "Gemini API error"})
             break
 
-        # Build the assistant message for conversation history
+        # Build assistant message for history
+        text_content = ""
+        tool_calls = []
         content_blocks = []
-        if text_content:
-            content_blocks.append({"type": "text", "text": text_content})
-        for tc in tool_calls:
-            content_blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
+
+        for part in response_parts:
+            if part["type"] == "text":
+                text_content += part["text"]
+                content_blocks.append(part)
+            elif part["type"] == "function_call":
+                tool_calls.append(part)
+                content_blocks.append(part)
+
         messages.append({"role": "assistant", "content": content_blocks})
 
         if stop_reason == "end_turn" or not tool_calls:
             actions.append({"step": step + 1, "type": "complete", "message": text_content or "Task complete."})
             break
 
-        # Execute tool calls and add results
-        tool_results = []
+        # Execute function calls and add results
+        fn_response_blocks = []
         for tc in tool_calls:
             fn_name = tc["name"]
-            fn_args = tc["input"]
+            fn_args = tc["args"]
             print(f"[orchestrator]   Tool: {fn_name}({fn_args})")
             result_str = await execute_tool_call(fn_name, fn_args)
             try:
@@ -424,9 +481,14 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
             except (json.JSONDecodeError, TypeError):
                 result_parsed = {"result": result_str}
             actions.append({"step": step + 1, "type": "tool_call", "tool": fn_name, "args": fn_args, "result": result_parsed})
-            tool_results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": result_str})
+            fn_response_blocks.append({
+                "type": "function_response",
+                "name": fn_name,
+                "content": result_str,
+                "id": tc.get("id"),
+            })
 
-        messages.append({"role": "user", "content": tool_results})
+        messages.append({"role": "user", "content": fn_response_blocks})
 
     return actions
 
@@ -515,7 +577,7 @@ def convert_to_a2ui(tool_name: str, args: dict) -> dict:
 
 async def run_agent_loop_streaming(task: str, max_steps: int = 15):
     """
-    Streaming agentic loop using Anthropic SDK. Yields (event_type, data)
+    Agentic loop using Gemini SDK. Yields (event_type, data)
     tuples for SSE — same format the SwiftUI app already handles.
     """
     yield ("state", {"state": "thinking"})
@@ -524,45 +586,38 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
 
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
-        had_error = False
-        stop_reason = None
-        text_content = ""
-        tool_calls = []
-        buffered_tokens = []
 
-        async for event_type, event_data in call_claude_streaming(messages, SYSTEM_PROMPT, tools=ALL_TOOLS):
-            if event_type == "token":
-                buffered_tokens.append(event_data)
-                text_content += event_data["text"]
-            elif event_type == "_tool_use":
-                tool_calls.append(event_data)
-            elif event_type == "_done":
-                stop_reason = event_data["stop_reason"]
-            elif event_type == "error":
-                yield ("error", event_data)
-                had_error = True
-                break
+        contents = _build_gemini_contents(messages)
+        response_parts, stop_reason = await call_gemini(
+            contents, SYSTEM_PROMPT, tools=GEMINI_FUNCTION_DECLARATIONS,
+        )
 
-        if had_error:
+        if stop_reason == "error":
+            yield ("error", {"message": "Gemini API error"})
             yield ("state", {"state": "error"})
             async with job_lock:
                 current_job["state"] = "error"
             return
 
+        text_content = ""
+        tool_calls = []
+        content_blocks = []
+
+        for part in response_parts:
+            if part["type"] == "text":
+                text_content += part["text"]
+                content_blocks.append(part)
+            elif part["type"] == "function_call":
+                tool_calls.append(part)
+                content_blocks.append(part)
+
         # Check if this turn has any render_* tool calls
         has_render_tool = any(tc["name"].startswith("render_") for tc in tool_calls)
 
-        # Only emit buffered tokens if no render_* tool was called
-        if not has_render_tool:
-            for token_data in buffered_tokens:
-                yield ("token", token_data)
+        # Emit text as a single token event if no render_* tool was called
+        if not has_render_tool and text_content:
+            yield ("token", {"text": text_content})
 
-        # Build assistant message for conversation history
-        content_blocks = []
-        if text_content:
-            content_blocks.append({"type": "text", "text": text_content})
-        for tc in tool_calls:
-            content_blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
         messages.append({"role": "assistant", "content": content_blocks})
 
         # If no tool calls, we're done
@@ -572,15 +627,15 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
                 current_job["state"] = "complete"
             return
 
-        # Execute each tool call
+        # Execute each function call
         yield ("state", {"state": "working"})
         async with job_lock:
             current_job["state"] = "working"
 
-        tool_results = []
+        fn_response_blocks = []
         for tc in tool_calls:
             fn_name = tc["name"]
-            fn_args = tc["input"]
+            fn_args = tc["args"]
             print(f"[orchestrator]   Tool: {fn_name}({fn_args})")
 
             if fn_name.startswith("render_"):
@@ -607,14 +662,15 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
                     "result": action_result,
                 })
 
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tc["id"],
+            fn_response_blocks.append({
+                "type": "function_response",
+                "name": fn_name,
                 "content": result_str,
+                "id": tc.get("id"),
             })
 
-        # Add tool results and loop back for next Claude call
-        messages.append({"role": "user", "content": tool_results})
+        # Add function responses and loop back for next Gemini call
+        messages.append({"role": "user", "content": fn_response_blocks})
         yield ("state", {"state": "thinking"})
         async with job_lock:
             current_job["state"] = "thinking"
@@ -630,7 +686,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
 # ---------------------------------------------------------------------------
 
 async def handle_profile(name: str) -> dict:
-    """Profile a person using Tavily web search + Claude summarization."""
+    """Profile a person using Tavily web search + Gemini summarization."""
     results = await asyncio.to_thread(call_tavily, f"{name} professional background work")
     if "error" in results:
         return results
@@ -642,13 +698,16 @@ async def handle_profile(name: str) -> dict:
 
     try:
         client = _get_client()
-        response = await client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=1024,
-            system="Summarize this person's professional profile as JSON: name, title, company, interests (array), recent_activity (string), bio (2-3 sentences).",
-            messages=[{"role": "user", "content": f"Person: {name}\n\nSearch results:\n{search_content}"}],
+        response = await client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=f"Person: {name}\n\nSearch results:\n{search_content}",
+            config=types.GenerateContentConfig(
+                system_instruction="Summarize this person's professional profile as JSON: name, title, company, interests (array), recent_activity (string), bio (2-3 sentences).",
+                max_output_tokens=1024,
+                temperature=0,
+            ),
         )
-        content = response.content[0].text
+        content = response.text or ""
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
         elif "```" in content:
@@ -686,8 +745,8 @@ async def lifespan(application: FastAPI):
     """Startup / shutdown lifecycle."""
     global _google_access_token
 
-    if not ANTHROPIC_API_KEY:
-        print("[orchestrator] WARNING: ANTHROPIC_API_KEY not set. Set it: export ANTHROPIC_API_KEY=your_key")
+    if not GEMINI_API_KEY:
+        print("[orchestrator] WARNING: GEMINI_API_KEY not set. Set it: export GEMINI_API_KEY=your_key")
     if not TAVILY_API_KEY:
         print("[orchestrator] WARNING: TAVILY_API_KEY not set. Set it: export TAVILY_API_KEY=your_key")
 
@@ -714,8 +773,8 @@ async def lifespan(application: FastAPI):
 
     print(f"[orchestrator] Starting on port {PORT}")
     print(f"[orchestrator] Agent Server expected at {AGENT_SERVER_URL}")
-    print(f"[orchestrator] Model: {CLAUDE_MODEL}")
-    print(f"[orchestrator] Tools: {len(ALL_TOOLS)} ({len(BROWSER_TOOLS)} browser, {len(DESKTOP_TOOLS)} desktop, {len(UI_TOOLS)} UI, {len(PRODUCTIVITY_TOOLS)} productivity)")
+    print(f"[orchestrator] Model: {GEMINI_MODEL}")
+    print(f"[orchestrator] Tools: {len(ALL_TOOLS_ANTHROPIC)} ({len(BROWSER_TOOLS)} browser, {len(DESKTOP_TOOLS)} desktop, {len(UI_TOOLS)} UI, {len(PRODUCTIVITY_TOOLS)} productivity)")
     yield
     print("[orchestrator] Shutting down")
 
@@ -752,7 +811,7 @@ async def health():
     return {
         "status": "ok",
         "agent_server": agent_status,
-        "anthropic_configured": bool(ANTHROPIC_API_KEY),
+        "gemini_configured": bool(GEMINI_API_KEY),
         "tavily_configured": bool(TAVILY_API_KEY),
     }
 

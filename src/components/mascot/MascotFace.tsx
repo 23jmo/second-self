@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { motion, useTransform, useSpring, MotionValue } from "framer-motion";
+import { motion, useTransform, useSpring, MotionValue } from "motion/react";
 
 interface MascotFaceProps {
   className?: string;

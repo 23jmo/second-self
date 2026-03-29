@@ -1,6 +1,6 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { useWizardState } from "@/hooks/useWizardState";
 import WelcomeScreen from "./WelcomeScreen";
 import NameInputScreen from "./NameInputScreen";

@@ -4,9 +4,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        // Route handlers at /api/onboard and /api/chat take precedence.
-        // Everything else proxies straight through to FastAPI.
-        source: "/api/:path*",
+        // Proxy all /api/* requests to FastAPI EXCEPT /auth/* (handled by Auth0 middleware)
+        source: "/api/:path((?!auth).*)",
         destination: "http://localhost:8000/:path*",
       },
     ];

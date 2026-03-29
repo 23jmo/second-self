@@ -7,14 +7,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-import anthropic
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_PATH = Path("output/public_profile.json")
 TAVILY_RAW_PATH = Path("output/tavily_raw.json")
-_DEFAULT_MODEL = "claude-sonnet-4-20250514"
 _MAX_LLM_TOKENS = 1000
 
 _EMPTY_PROFILE: dict[str, Any] = {
@@ -47,37 +45,15 @@ _PROMPT = (
 # LLM helper
 # ---------------------------------------------------------------------------
 
-def _call_claude(prompt: str, text_block: str) -> dict[str, Any]:
-    """Send a prompt + text block to Claude and parse JSON response."""
+def _call_gemini(prompt: str, text_block: str) -> dict[str, Any]:
+    """Send a prompt + text block to Gemini and parse JSON response."""
     load_dotenv()
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise EnvironmentError("ANTHROPIC_API_KEY must be set in .env")
-    model = os.environ.get("CLAUDE_MODEL", _DEFAULT_MODEL)
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from src.synthesis.gemini_client import call_gemini_json
 
-    client = anthropic.Anthropic(api_key=api_key)
     full_prompt = f"{prompt}\n\n---\n\n{text_block}"
-
-    temperatures = [0, 0.3]
-    for attempt, temp in enumerate(temperatures):
-        response = client.messages.create(
-            model=model,
-            max_tokens=_MAX_LLM_TOKENS,
-            temperature=temp,
-            messages=[{"role": "user", "content": full_prompt}],
-        )
-        raw_text = response.content[0].text.strip()
-        if raw_text.startswith("```"):
-            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
-            raw_text = re.sub(r"\s*```$", "", raw_text)
-        try:
-            return json.loads(raw_text)
-        except json.JSONDecodeError:
-            if attempt == 0:
-                logger.warning("LLM returned non-JSON (temp=0), retrying. Raw: %.200s", raw_text)
-            else:
-                logger.error("LLM returned non-JSON after retry. Raw: %.200s", raw_text)
-    return {}
+    return call_gemini_json(full_prompt, max_tokens=_MAX_LLM_TOKENS)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +145,7 @@ def synthesize_tavily(
         return profile
 
     text_block = _build_text_block(results)
-    raw_profile = _call_claude(_PROMPT, text_block)
+    raw_profile = _call_gemini(_PROMPT, text_block)
 
     if not raw_profile:
         logger.error("LLM returned empty response. Using empty profile.")

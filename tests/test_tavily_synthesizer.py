@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -118,41 +118,30 @@ def test_cross_ref_does_not_mutate() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _call_claude
+# _call_gemini
 # ---------------------------------------------------------------------------
 
-def test_call_claude_parses_json() -> None:
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text='{"current_role": "Engineer"}')]
-    mock_client.return_value.messages.create.return_value = mock_response
-
-    with patch("analyze.tavily_synthesizer.anthropic.Anthropic", mock_client), \
-         patch("analyze.tavily_synthesizer.load_dotenv"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-        result = ts._call_claude("prompt", "text")
+def test_call_gemini_parses_json() -> None:
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"current_role": "Engineer"}), \
+         patch("analyze.tavily_synthesizer.load_dotenv"):
+        result = ts._call_gemini("prompt", "text")
     assert result == {"current_role": "Engineer"}
 
 
-def test_call_claude_missing_api_key() -> None:
+def test_call_gemini_missing_api_key() -> None:
     with patch("analyze.tavily_synthesizer.load_dotenv"), \
-         patch.dict("os.environ", {}, clear=True):
-        with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
-            ts._call_claude("prompt", "text")
+         patch("src.synthesis.gemini_client.call_gemini_json",
+               side_effect=EnvironmentError("GEMINI_API_KEY must be set in .env")):
+        with pytest.raises(EnvironmentError, match="GEMINI_API_KEY"):
+            ts._call_gemini("prompt", "text")
 
 
-def test_call_claude_retries_on_non_json() -> None:
-    mock_client = MagicMock()
-    bad = MagicMock()
-    bad.content = [MagicMock(text="not json")]
-    good = MagicMock()
-    good.content = [MagicMock(text='{"ok": true}')]
-    mock_client.return_value.messages.create.side_effect = [bad, good]
-
-    with patch("analyze.tavily_synthesizer.anthropic.Anthropic", mock_client), \
-         patch("analyze.tavily_synthesizer.load_dotenv"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "key"}):
-        result = ts._call_claude("prompt", "text")
+def test_call_gemini_retries_on_non_json() -> None:
+    # Retry logic is now handled inside call_gemini_json; test that
+    # _call_gemini passes through whatever call_gemini_json returns
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"ok": True}), \
+         patch("analyze.tavily_synthesizer.load_dotenv"):
+        result = ts._call_gemini("prompt", "text")
     assert result == {"ok": True}
 
 
@@ -185,7 +174,7 @@ def test_synthesize_loads_from_file(tmp_path: Path) -> None:
          patch.object(ts, "TAVILY_RAW_PATH", tavily_path), \
          patch("analyze.tavily_synthesizer.load_dotenv"), \
          patch.dict("os.environ", {"USER_EMAIL": "vin@acme.com"}), \
-         patch("analyze.tavily_synthesizer._call_claude", return_value=mock_profile):
+         patch("analyze.tavily_synthesizer._call_gemini", return_value=mock_profile):
         result = ts.synthesize_tavily()
     # "acme" in domain matches company "Acme" → bumped to high
     assert result["confidence"] == "high"
@@ -205,7 +194,7 @@ def test_synthesize_with_results_param(tmp_path: Path) -> None:
     with patch.object(ts, "OUTPUT_PATH", output), \
          patch("analyze.tavily_synthesizer.load_dotenv"), \
          patch.dict("os.environ", {"USER_EMAIL": "vin@random.com"}), \
-         patch("analyze.tavily_synthesizer._call_claude", return_value=mock_profile):
+         patch("analyze.tavily_synthesizer._call_gemini", return_value=mock_profile):
         result = ts.synthesize_tavily(results=results)
     assert result["current_role"] == "Designer"
     assert result["confidence"] == "low"
@@ -216,7 +205,7 @@ def test_synthesize_llm_failure(tmp_path: Path) -> None:
     results = [{"url": "https://x.com", "title": "X", "content": "c"}]
     with patch.object(ts, "OUTPUT_PATH", output), \
          patch("analyze.tavily_synthesizer.load_dotenv"), \
-         patch("analyze.tavily_synthesizer._call_claude", return_value={}):
+         patch("analyze.tavily_synthesizer._call_gemini", return_value={}):
         result = ts.synthesize_tavily(results=results)
     assert result["confidence"] == "none"
     assert result["current_role"] is None
@@ -231,7 +220,7 @@ def test_synthesize_merges_defaults(tmp_path: Path) -> None:
     with patch.object(ts, "OUTPUT_PATH", output), \
          patch("analyze.tavily_synthesizer.load_dotenv"), \
          patch.dict("os.environ", {"USER_EMAIL": ""}), \
-         patch("analyze.tavily_synthesizer._call_claude", return_value=partial):
+         patch("analyze.tavily_synthesizer._call_gemini", return_value=partial):
         result = ts.synthesize_tavily(results=results)
     assert result["current_role"] == "CEO"
     assert result["location"] is None

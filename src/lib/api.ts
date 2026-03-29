@@ -45,35 +45,15 @@ export interface AuthCallbackResponse {
   session_id: string;
 }
 
-export interface FirebaseConfig {
-  apiKey: string;
-  authDomain: string;
-  projectId: string;
+export interface AuthSession {
+  authenticated: boolean;
+  email?: string;
+  name?: string;
 }
 
-export async function getFirebaseConfig(): Promise<FirebaseConfig> {
-  const res = await fetch("/api/auth/firebase-config");
-  if (!res.ok) throw new Error("Failed to fetch Firebase config");
-  return res.json();
-}
-
-export async function postAuthCallback(
-  idToken: string,
-  googleAccessToken: string,
-  email: string,
-  name: string,
-): Promise<AuthCallbackResponse> {
-  const res = await fetch("/api/auth/callback", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      id_token: idToken,
-      google_access_token: googleAccessToken,
-      email,
-      name,
-    }),
-  });
-  if (!res.ok) throw new Error(await res.text());
+export async function getAuthSession(): Promise<AuthSession> {
+  const res = await fetch("/api/auth/status");
+  if (!res.ok) return { authenticated: false };
   return res.json();
 }
 

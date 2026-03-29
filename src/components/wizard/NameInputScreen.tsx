@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import MascotFace from "@/components/mascot/MascotFace";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";

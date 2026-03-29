@@ -457,33 +457,33 @@ def test_deduplicate_events_keeps_recent_regardless() -> None:
 # ---------------------------------------------------------------------------
 
 def test_run_event_extraction_no_emails() -> None:
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-        result = ee.run_event_extraction(emails=None)
+    result = ee.run_event_extraction(emails=None)
     assert result == []
 
 
 def test_run_event_extraction_empty_list() -> None:
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-        result = ee.run_event_extraction(emails=[])
+    result = ee.run_event_extraction(emails=[])
     assert result == []
 
 
 def test_run_event_extraction_below_threshold() -> None:
     """Years with < 10 emails should be skipped."""
     emails = _make_emails_for_year(2023, 5)
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
-         patch.object(ee, "_sample_by_recency", side_effect=lambda x: x):
+    with patch.object(ee, "_sample_by_recency", side_effect=lambda x: x):
         result = ee.run_event_extraction(emails=emails)
     assert result == []
 
 
 def test_run_event_extraction_missing_api_key() -> None:
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
-        try:
-            ee.run_event_extraction(emails=_make_emails_for_year(2023, 25))
-            assert False, "Should have raised"
-        except EnvironmentError:
-            pass
+    """When GEMINI_API_KEY is missing, _call_gemini catches the error and
+    returns empty — so run_event_extraction returns an empty list."""
+    with patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
+         patch("src.synthesis.gemini_client.call_gemini_json",
+               side_effect=EnvironmentError("GEMINI_API_KEY must be set in .env")), \
+         patch("analyze.event_extractor.ProcessPoolExecutor", ThreadPoolExecutor), \
+         patch.object(ee, "_write_to_episodic"):
+        result = ee.run_event_extraction(emails=_make_emails_for_year(2023, 25))
+    assert result == []
 
 
 def test_run_event_extraction_with_mock_llm(tmp_path: Path) -> None:
@@ -496,8 +496,7 @@ def test_run_event_extraction_with_mock_llm(tmp_path: Path) -> None:
         {"date": "2024-06-15", "category": "job", "summary": "Started new role", "direction": "sent", "confidence": "high"},
     ]
 
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
-         patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
+    with patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
          patch.object(ee, "_process_year", return_value=mock_events), \
          patch("analyze.event_extractor.ProcessPoolExecutor", ThreadPoolExecutor), \
          patch.object(ee, "OUTPUT_PATH", output_path), \
@@ -523,7 +522,7 @@ def test_run_event_extraction_survives_worker_failure(tmp_path: Path) -> None:
     emails_2024 = _make_emails_for_year(2024, 25)
     all_emails = emails_2023 + emails_2024
 
-    def mock_process_year(year, msgs, api_key, model):
+    def mock_process_year(year, msgs):
         if year == 2023:
             raise RuntimeError("Worker crashed")
         return [
@@ -532,8 +531,7 @@ def test_run_event_extraction_survives_worker_failure(tmp_path: Path) -> None:
 
     output_path = tmp_path / "life_events.json"
 
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
-         patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
+    with patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
          patch.object(ee, "_process_year", side_effect=mock_process_year), \
          patch("analyze.event_extractor.ProcessPoolExecutor", ThreadPoolExecutor), \
          patch.object(ee, "OUTPUT_PATH", output_path), \
@@ -555,8 +553,7 @@ def test_run_event_extraction_deduplicates(tmp_path: Path) -> None:
         {"date": "2024-06-15", "category": "job", "summary": "Started new role", "direction": "sent", "confidence": "medium"},
     ]
 
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}), \
-         patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
+    with patch.object(ee, "_sample_by_recency", side_effect=lambda x: x), \
          patch.object(ee, "_process_year", return_value=duped_events), \
          patch("analyze.event_extractor.ProcessPoolExecutor", ThreadPoolExecutor), \
          patch.object(ee, "OUTPUT_PATH", output_path), \
@@ -584,74 +581,54 @@ def test_write_to_episodic_calls_append() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _call_claude
+# _call_gemini
 # ---------------------------------------------------------------------------
 
-def test_call_claude_parses_json() -> None:
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=json.dumps(_SAMPLE_LLM_RESPONSE))]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
-
-    with patch("analyze.event_extractor.anthropic.Anthropic", return_value=mock_client):
-        result = ee._call_claude("test prompt", "test-key", "test-model")
+def test_call_gemini_parses_json() -> None:
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value=_SAMPLE_LLM_RESPONSE):
+        result = ee._call_gemini("test prompt")
 
     assert len(result) == 2
 
 
-def test_call_claude_handles_markdown_fence() -> None:
-    fenced = f"```json\n{json.dumps(_SAMPLE_LLM_RESPONSE)}\n```"
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=fenced)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
-
-    with patch("analyze.event_extractor.anthropic.Anthropic", return_value=mock_client):
-        result = ee._call_claude("test prompt", "test-key", "test-model")
+def test_call_gemini_handles_markdown_fence() -> None:
+    # Markdown fence stripping is now handled inside call_gemini_json
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value=_SAMPLE_LLM_RESPONSE):
+        result = ee._call_gemini("test prompt")
 
     assert len(result) == 2
 
 
-def test_call_claude_returns_empty_on_failure() -> None:
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="not json at all")]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_response
-
-    with patch("analyze.event_extractor.anthropic.Anthropic", return_value=mock_client):
-        result = ee._call_claude("test prompt", "test-key", "test-model")
+def test_call_gemini_returns_empty_on_failure() -> None:
+    # call_gemini_json returns {} on parse failure; _call_gemini extracts
+    # .get("events", []) which yields []
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={}):
+        result = ee._call_gemini("test prompt")
 
     assert result == []
 
 
-def test_call_claude_retries_on_api_error() -> None:
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=json.dumps(_SAMPLE_LLM_RESPONSE))]
-    mock_client.messages.create.side_effect = [
-        Exception("API timeout"),
-        mock_response,
-    ]
+def test_call_gemini_returns_empty_on_api_error() -> None:
+    # Non-rate-limit errors are not retried — _call_gemini logs and returns []
+    mock_call = MagicMock(side_effect=Exception("API timeout"))
 
-    with patch("analyze.event_extractor.anthropic.Anthropic", return_value=mock_client):
-        result = ee._call_claude("test prompt", "test-key", "test-model")
+    with patch("src.synthesis.gemini_client.call_gemini_json", mock_call):
+        result = ee._call_gemini("test prompt")
 
-    assert len(result) == 2
+    assert result == []
+    assert mock_call.call_count == 1
 
 
-def test_call_claude_retries_on_rate_limit() -> None:
+def test_call_gemini_retries_on_rate_limit() -> None:
     """429 rate limit errors should trigger exponential backoff retry."""
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=json.dumps(_SAMPLE_LLM_RESPONSE))]
-    mock_client.messages.create.side_effect = [
+    mock_call = MagicMock(side_effect=[
         Exception("Error code: 429 - rate_limit_error"),
-        mock_response,
-    ]
+        _SAMPLE_LLM_RESPONSE,
+    ])
 
-    with patch("analyze.event_extractor.anthropic.Anthropic", return_value=mock_client), \
+    with patch("src.synthesis.gemini_client.call_gemini_json", mock_call), \
          patch("analyze.event_extractor.time.sleep") as mock_sleep:
-        result = ee._call_claude("test prompt", "test-key", "test-model")
+        result = ee._call_gemini("test prompt")
 
     assert len(result) == 2
     # Should have slept once with base delay
