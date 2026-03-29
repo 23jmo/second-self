@@ -31,7 +31,7 @@ PORT = 8420
 AGENT_SERVER_URL = "http://localhost:8421"
 DEDALUS_API_URL = os.environ.get("DEDALUS_API_URL", "https://api.dedaluslabs.ai/v1")
 DEDALUS_API_KEY = os.environ.get("DEDALUS_API_KEY", "")
-DEDALUS_MODEL = os.environ.get("DEDALUS_MODEL", "gpt-4o")
+DEDALUS_MODEL = os.environ.get("DEDALUS_MODEL", "anthropic/claude-sonnet-4-6")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # ---------------------------------------------------------------------------
@@ -202,7 +202,92 @@ DESKTOP_TOOLS = [
     },
 ]
 
-ALL_TOOLS = BROWSER_TOOLS + DESKTOP_TOOLS
+# UI tools (generative UI components rendered in the SwiftUI chat)
+UI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "render_task_approval",
+            "description": "Render an interactive task approval card in the chat. Use this BEFORE executing a multi-step plan so the user can review, reorder, and approve the steps. You MUST include at least 2 steps in the steps array — each step must have an id (integer) and text (string describing the step). NEVER call this with an empty steps array.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title for the plan card, e.g. 'Task Plan'"},
+                    "steps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer", "description": "Step number, starting from 1"},
+                                "text": {"type": "string", "description": "Description of what this step does, e.g. 'Search Google for Korean restaurants near me'"},
+                            },
+                            "required": ["id", "text"],
+                        },
+                        "description": "Ordered list of concrete steps in the plan. MUST have at least 1 step. Each step needs an id and text.",
+                    },
+                },
+                "required": ["steps"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "render_profile_card",
+            "description": "Render a profile card showing facts you've learned about the user. Each fact has confirm/deny buttons so the user can verify accuracy. Use when you discover something about the user (tools they use, their role, preferences).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "facts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string", "description": "The fact, e.g. 'You use VS Code'"},
+                            },
+                            "required": ["text"],
+                        },
+                        "description": "Facts to confirm with the user",
+                    },
+                },
+                "required": ["facts"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "render_screenshot",
+            "description": "Render a screenshot preview card in the chat. Use after taking a browser screenshot to show the user what you see.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image": {"type": "string", "description": "Base64-encoded JPEG image data"},
+                    "caption": {"type": "string", "description": "Short description of what the screenshot shows"},
+                },
+                "required": ["image"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "render_confirm_action",
+            "description": "Render a confirmation dialog before executing a potentially destructive or important action. Use before filling forms, sending messages, deleting things, or making changes the user should approve first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Description of what you want to do, e.g. 'Fill out the contact form with your info'"},
+                    "actionId": {"type": "string", "description": "Unique identifier for this action"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+]
+
+ALL_TOOLS = BROWSER_TOOLS + DESKTOP_TOOLS + UI_TOOLS
 
 # Map tool names to Agent Server endpoints
 TOOL_ENDPOINT_MAP = {
@@ -458,6 +543,10 @@ def call_tavily(query: str) -> dict:
 
 def execute_tool_call(tool_name: str, arguments: dict) -> str:
     """Execute a single tool call against the Agent Server."""
+    # UI render tools are handled by the SSE layer, not the agent server
+    if tool_name.startswith("render_"):
+        return json.dumps({"status": "rendered", "awaiting_user_action": True})
+
     endpoint = TOOL_ENDPOINT_MAP.get(tool_name)
     if not endpoint:
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
@@ -475,7 +564,7 @@ def execute_tool_call(tool_name: str, arguments: dict) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
-    "You are controlling a macOS desktop with two types of tools:\n"
+    "You are controlling a macOS desktop with three types of tools:\n"
     "\n"
     "BROWSER TOOLS (for any web task - searching, reading pages, filling forms):\n"
     "  browser_goto(url) - navigate to a URL\n"
@@ -492,12 +581,27 @@ SYSTEM_PROMPT = (
     "  click(x, y) - click at pixel coordinates\n"
     "  screenshot() - capture the desktop\n"
     "\n"
+    "UI TOOLS (render interactive components in the chat for the user):\n"
+    "  render_task_approval(title, steps) - show a plan for the user to review and approve BEFORE executing\n"
+    "  render_profile_card(facts) - show facts you learned about the user for confirmation\n"
+    "  render_screenshot(image, caption) - show a screenshot inline in the chat\n"
+    "  render_confirm_action(action) - ask permission before a destructive or important action\n"
+    "\n"
     "RULES:\n"
     "- For ANY web task, use browser_* tools exclusively.\n"
     "- For native macOS apps, use desktop tools.\n"
     "- NEVER mix browser and desktop tools in the same step.\n"
     "- ALWAYS call browser_snapshot() after navigation to get fresh element refs.\n"
     "- Element refs (like @e3) become stale after page changes - re-snapshot.\n"
+    "\n"
+    "MANDATORY UI RULES — YOU MUST FOLLOW THESE WITH NO EXCEPTIONS:\n"
+    "- ALWAYS prefer render_* UI tools over plain text. Only use plain text for short replies under one sentence.\n"
+    "- ANY time the user asks a question, use a render_* tool to respond. Use render_task_approval for options/plans, render_confirm_action for yes/no questions.\n"
+    "- ANY response involving steps, plans, lists, workflows, options, or choices MUST use render_task_approval. NEVER write these as text.\n"
+    "- ANY response where you learn or infer facts about the user MUST use render_profile_card. NEVER state facts in text.\n"
+    "- BEFORE any form fill, message send, navigation, or action MUST use render_confirm_action.\n"
+    "- If your response would be longer than one sentence, use a render_* tool instead of text.\n"
+    "- The chat UI renders these tools as beautiful interactive components. Plain text looks broken by comparison. ALWAYS use UI tools.\n"
     "Complete the user's task step by step."
 )
 
@@ -561,6 +665,84 @@ def run_agent_loop(task: str, max_steps: int = 15) -> list:
 
 
 # ---------------------------------------------------------------------------
+# A2UI conversion — maps render_* tool args to A2UI JSON
+# ---------------------------------------------------------------------------
+
+RENDER_TYPE_MAP = {
+    "render_task_approval": "TaskApproval",
+    "render_profile_card": "ProfileCard",
+    "render_screenshot": "Screenshot",
+    "render_confirm_action": "ConfirmAction",
+}
+
+
+def convert_to_a2ui(tool_name: str, args: dict) -> dict:
+    """Convert a render_* tool call into an A2UI-compatible payload."""
+    component_type = RENDER_TYPE_MAP.get(tool_name, tool_name)
+    component_id = f"comp-{uuid.uuid4().hex[:8]}"
+
+    if tool_name == "render_task_approval":
+        raw_steps = args.get("steps", [])
+        # Normalize steps: LLMs sometimes send flat strings instead of {id, text} objects
+        normalized_steps = []
+        for i, step in enumerate(raw_steps):
+            if isinstance(step, str):
+                normalized_steps.append({"id": i + 1, "text": step})
+            elif isinstance(step, dict):
+                normalized_steps.append({
+                    "id": step.get("id", i + 1),
+                    "text": step.get("text", str(step)),
+                })
+            else:
+                normalized_steps.append({"id": i + 1, "text": str(step)})
+        properties = {
+            "title": args.get("title", "Task Plan"),
+            "steps": normalized_steps,
+            "reorderable": True,
+        }
+        actions = [
+            {"id": "approve", "label": "Approve", "type": "approve"},
+            {"id": "reject", "label": "Reject", "type": "reject"},
+        ]
+    elif tool_name == "render_profile_card":
+        properties = {
+            "facts": args.get("facts", []),
+        }
+        actions = []
+    elif tool_name == "render_screenshot":
+        properties = {
+            "image": args.get("image", ""),
+            "caption": args.get("caption"),
+        }
+        actions = []
+    elif tool_name == "render_confirm_action":
+        properties = {
+            "action": args.get("action", ""),
+            "actionId": args.get("actionId", component_id),
+        }
+        actions = [
+            {"id": "allow", "label": "Allow", "type": "allow"},
+            {"id": "deny", "label": "Deny", "type": "deny"},
+        ]
+    else:
+        properties = args
+        actions = []
+
+    return {
+        "version": "0.8",
+        "components": [
+            {
+                "id": component_id,
+                "type": component_type,
+                "properties": properties,
+                "parentId": None,
+                "actions": actions if actions else None,
+            }
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Agent loop — streaming (for POST /chat SSE)
 # ---------------------------------------------------------------------------
 
@@ -580,10 +762,11 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
         assembled_message = None
         finish_reason = None
         had_error = False
+        buffered_tokens = []  # Buffer tokens so we can suppress if render_* tools appear
 
         async for event_type, event_data in call_dedalus_streaming(messages, tools=ALL_TOOLS):
             if event_type == "token":
-                yield ("token", event_data)
+                buffered_tokens.append(event_data)
             elif event_type == "error":
                 yield ("error", event_data)
                 had_error = True
@@ -598,8 +781,21 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
                 current_job["state"] = "error"
             return
 
+        # Check if this turn has any render_* tool calls
+        tool_calls = assembled_message.get("tool_calls", [])
+        has_render_tool = any(
+            tc["function"]["name"].startswith("render_")
+            for tc in tool_calls
+        ) if tool_calls else False
+
+        # Only emit buffered tokens if no render_* tool was called
+        # (otherwise the text is redundant narration alongside the UI component)
+        if not has_render_tool:
+            for token_data in buffered_tokens:
+                yield ("token", token_data)
+
         # If the LLM responded with text (no tool calls), we're done
-        if finish_reason == "stop" or not assembled_message.get("tool_calls"):
+        if finish_reason == "stop" or not tool_calls:
             content = assembled_message.get("content", "Task complete.")
             yield ("state", {"state": "complete", "message": content})
             async with job_lock:
@@ -620,13 +816,18 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
                 fn_args = {}
             print(f"[orchestrator]   Tool: {fn_name}({fn_args})")
 
-            yield ("tool_call", {"tool": fn_name, "args": fn_args, "step": step + 1})
-
-            # Execute in a thread to avoid blocking the event loop
-            result_str = await asyncio.to_thread(execute_tool_call, fn_name, fn_args)
-            result_data = json.loads(result_str)
-
-            yield ("tool_result", {"tool": fn_name, "result": result_data, "step": step + 1})
+            if fn_name.startswith("render_"):
+                # UI tool — emit component event, don't execute against agent server
+                a2ui_payload = convert_to_a2ui(fn_name, fn_args)
+                yield ("component", {"a2ui": a2ui_payload})
+                result_str = json.dumps({"status": "rendered", "awaiting_user_action": True})
+                result_data = json.loads(result_str)
+            else:
+                # Agent tool — execute against agent server
+                yield ("tool_call", {"tool": fn_name, "args": fn_args, "step": step + 1})
+                result_str = await asyncio.to_thread(execute_tool_call, fn_name, fn_args)
+                result_data = json.loads(result_str)
+                yield ("tool_result", {"tool": fn_name, "result": result_data, "step": step + 1})
 
             async with job_lock:
                 current_job["actions"].append({
