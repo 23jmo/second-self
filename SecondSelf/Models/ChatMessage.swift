@@ -12,6 +12,7 @@ enum MessageSender {
 enum MessageContent {
     case text(String)
     case toolCall(tool: String, args: [String: String], result: String?)
+    case component(A2UIPayload)
 }
 
 // MARK: - Chat Message

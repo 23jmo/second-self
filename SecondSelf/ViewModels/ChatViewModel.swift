@@ -23,6 +23,7 @@ final class ChatViewModel: ObservableObject {
     private var sseTask: URLSessionDataTask?
     private var reconnectTimer: Timer?
     private var currentTwinMessageID: UUID?
+    private(set) var streamingComponentID: UUID?
     private let audioManager = AudioManager()
 
     private lazy var urlSession: URLSession = {
@@ -137,6 +138,12 @@ final class ChatViewModel: ObservableObject {
             messages.append(errorMessage)
             currentTwinMessageID = nil
 
+        case .component:
+            handleComponent(data: data)
+
+        case .componentStart, .componentDelta, .componentEnd:
+            break // Reserved for future streaming component support
+
         case .ping:
             break
         }
@@ -229,6 +236,69 @@ final class ChatViewModel: ObservableObject {
                 messages[lastToolIndex].content = .toolCall(tool: tool, args: args, result: displayResult)
             }
         }
+    }
+
+    // MARK: - Component Handling
+
+    private func handleComponent(data: String) {
+        // Finalize any in-progress twin text message
+        currentTwinMessageID = nil
+
+        guard let jsonData = data.data(using: .utf8) else {
+            print("[A2UI] Failed to convert data string to UTF-8")
+            return
+        }
+
+        // Parse the A2UI payload from {"a2ui": {...}}
+        if let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+           let a2uiDict = json["a2ui"] {
+            // Re-serialize the a2ui sub-object and decode
+            if let a2uiData = try? JSONSerialization.data(withJSONObject: a2uiDict) {
+                do {
+                    let payload = try JSONDecoder().decode(A2UIPayload.self, from: a2uiData)
+                    print("[A2UI] Decoded payload: \(payload.components.count) components")
+                    for comp in payload.components {
+                        print("[A2UI]   Component: type=\(comp.type), props=\(comp.properties.keys.sorted())")
+                    }
+                    appendComponentMessage(payload: payload)
+                    return
+                } catch {
+                    print("[A2UI] Decode error from a2ui sub-object: \(error)")
+                }
+            }
+        }
+
+        // Fallback: try parsing the entire data as A2UI directly
+        do {
+            let payload = try JSONDecoder().decode(A2UIPayload.self, from: jsonData)
+            print("[A2UI] Decoded payload (direct): \(payload.components.count) components")
+            appendComponentMessage(payload: payload)
+        } catch {
+            print("[A2UI] All decode attempts failed: \(error)")
+            // Last resort: show as text
+            let msg = ChatMessage(
+                id: UUID(),
+                sender: .twin,
+                content: .text("[Component failed to render]"),
+                timestamp: Date()
+            )
+            messages.append(msg)
+        }
+    }
+
+    private func appendComponentMessage(payload: A2UIPayload) {
+        let msg = ChatMessage(
+            id: UUID(),
+            sender: .twin,
+            content: .component(payload),
+            timestamp: Date()
+        )
+        messages.append(msg)
+    }
+
+    /// Send a component action as a chat message back to the orchestrator.
+    func sendComponentAction(actionId: String, context: String) {
+        sendMessage(text: context)
     }
 
     // MARK: - Connection Management
