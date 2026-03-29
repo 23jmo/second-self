@@ -52,18 +52,17 @@
     import {
       getAuth,
       signInWithPopup,
+      signInWithRedirect,
+      getRedirectResult,
       GoogleAuthProvider,
     } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
 
-    // Firebase config is injected by reading env vars server-side,
-    // but for a static file we read them from a meta endpoint.
     const configResp = await fetch("/auth/firebase-config");
     const firebaseConfig = await configResp.json();
 
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
 
-    // Google provider with Gmail, Calendar, Docs, Slides, Drive scopes
     const provider = new GoogleAuthProvider();
     provider.addScope("https://www.googleapis.com/auth/gmail.readonly");
     provider.addScope("https://www.googleapis.com/auth/gmail.send");
@@ -73,26 +72,18 @@
     provider.addScope("https://www.googleapis.com/auth/presentations");
     provider.addScope("https://www.googleapis.com/auth/drive.file");
 
-    window.signIn = async function () {
-      const btn = document.getElementById("signin-btn");
-      const status = document.getElementById("status");
-      btn.disabled = true;
-      status.textContent = "Opening Google sign-in...";
-      status.className = "";
-
-      try {
-        const result = await signInWithPopup(auth, provider);
-
-        // Extract tokens
+    // Check if returning from a redirect
+    try {
+      const result = await getRedirectResult(auth);
+      if (result) {
         const credential = GoogleAuthProvider.credentialFromResult(result);
         const googleAccessToken = credential.accessToken;
         const idToken = await result.user.getIdToken();
         const email = result.user.email;
         const name = result.user.displayName || email;
 
-        status.textContent = "Signed in! Sending tokens...";
+        document.getElementById("status").textContent = "Signed in! Saving session...";
 
-        // POST tokens to our backend
         const resp = await fetch("/auth/callback", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -106,10 +97,54 @@
 
         if (!resp.ok) throw new Error(await resp.text());
 
-        const data = await resp.json();
+        document.getElementById("status").textContent = `Authenticated as ${name}. You can close this window.`;
+        document.getElementById("status").className = "success";
+        document.getElementById("signin-btn").style.display = "none";
+      }
+    } catch (err) {
+      console.error("Redirect result error:", err);
+    }
+
+    window.signIn = async function () {
+      const btn = document.getElementById("signin-btn");
+      const status = document.getElementById("status");
+      btn.disabled = true;
+      status.textContent = "Opening Google sign-in...";
+      status.className = "";
+
+      try {
+        // Try popup first (works in regular browsers)
+        const result = await signInWithPopup(auth, provider);
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        const googleAccessToken = credential.accessToken;
+        const idToken = await result.user.getIdToken();
+        const email = result.user.email;
+        const name = result.user.displayName || email;
+
+        status.textContent = "Signed in! Saving session...";
+
+        const resp = await fetch("/auth/callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id_token: idToken,
+            google_access_token: googleAccessToken,
+            email: email,
+            name: name,
+          }),
+        });
+
+        if (!resp.ok) throw new Error(await resp.text());
+
         status.textContent = `Authenticated as ${name}. You can close this window.`;
         status.className = "success";
       } catch (err) {
+        // Popup blocked — fall back to redirect
+        if (err.code === "auth/popup-blocked" || err.code === "auth/popup-closed-by-user") {
+          status.textContent = "Redirecting to Google...";
+          await signInWithRedirect(auth, provider);
+          return;
+        }
         console.error(err);
         status.textContent = `Error: ${err.message}`;
         status.className = "error";

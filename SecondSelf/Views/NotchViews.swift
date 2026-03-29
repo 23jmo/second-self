@@ -6,10 +6,26 @@ import SwiftUI
 /// DynamicNotchKit sees this as one "expanded" view, but we swap content internally.
 struct ExpandedNotchContent: View {
     @ObservedObject var chatViewModel: ChatViewModel
+    @ObservedObject var authManager: GoogleAuthManager
 
     var body: some View {
         VStack(spacing: 0) {
-            if chatViewModel.expansionStage >= 2 {
+            if !authManager.isAuthenticated {
+                // Not signed in — show sign-in view
+                if chatViewModel.expansionStage >= 2 {
+                    signInExpandedContent
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                } else {
+                    signInMiniContent
+                        .transition(.asymmetric(
+                            insertion: .opacity,
+                            removal: .opacity.combined(with: .move(edge: .bottom))
+                        ))
+                }
+            } else if chatViewModel.expansionStage >= 2 {
                 fullChatContent
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .move(edge: .bottom)),
@@ -24,7 +40,87 @@ struct ExpandedNotchContent: View {
             }
         }
         .animation(.ssPanelSpring, value: chatViewModel.expansionStage)
+        .animation(.ssPanelSpring, value: authManager.isAuthenticated)
         .environment(\.colorScheme, .dark)
+    }
+
+    // MARK: - Sign In: Mini (stage 1)
+
+    private var signInMiniContent: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 16))
+                .foregroundColor(Color.ssTwinGreen)
+
+            Text("Sign in to get started")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color.ssTextSecondary)
+
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .frame(width: 300, height: 36)
+        .contentShape(Rectangle())
+        .onTapGesture { chatViewModel.onNotchTap?() }
+    }
+
+    // MARK: - Sign In: Expanded (stage 2)
+
+    private var signInExpandedContent: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            VStack(spacing: 6) {
+                Text("Second Self")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(Color.ssTextPrimary)
+
+                Text("Sign in to activate your digital twin")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.ssTextSecondary)
+            }
+
+            Button(action: { authManager.signIn() }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.fill")
+                        .font(.system(size: 16))
+                    Text("Sign in with Google")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.ssTwinGreen)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(authManager.isAuthenticating)
+
+            if authManager.isAuthenticating {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.7)
+                    Text("Waiting for sign-in...")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.ssTextSecondary)
+                }
+            }
+
+            if let error = authManager.errorMessage {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundColor(Color.ssError)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+
+            Spacer()
+        }
+        .frame(width: 420, height: 300)
+        .background(Color.ssNotchBlack)
     }
 
     // MARK: - Stage 1: Status Mini View
@@ -79,34 +175,26 @@ struct ExpandedNotchContent: View {
         .animation(.ssContentReveal, value: chatViewModel.twinState)
     }
 
-    // MARK: - Stage 2: Full Chat (matches Figma 90:102)
+    // MARK: - Stage 2: Full Chat (matches Figma 136:996)
 
     private var fullChatContent: some View {
         VStack(spacing: 0) {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // VNC PiP: appears when agent starts working, stays until user dismisses
+            // VNC PiP: fills all remaining space, never hides once shown
             if chatViewModel.showVNCFeed {
-                ZStack(alignment: .topTrailing) {
+                ZStack(alignment: .bottomTrailing) {
                     VNCPipView(twinState: chatViewModel.twinState)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 220)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Dismiss button overlaid on stream
-                    Button(action: { chatViewModel.dismissVNCFeed() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white.opacity(0.7))
-                            .padding(5)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(6)
+                    // Twin character overlapping bottom-right corner
+                    TwinCharacterView(twinState: chatViewModel.twinState)
+                        .frame(width: 72, height: 99)
+                        .offset(x: 4, y: 10)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 5))
                 .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
@@ -139,12 +227,30 @@ struct ExpandedNotchContent: View {
 
 struct CompactLeadingContent: View {
     @ObservedObject var chatViewModel: ChatViewModel
+    @ObservedObject var authManager: GoogleAuthManager
+    @State private var pulsePhase: Bool = false
 
     var body: some View {
-        TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
-            .frame(width: 24, height: 24)
+        if authManager.isAuthenticated {
+            TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+                .onTapGesture { chatViewModel.onNotchTap?() }
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.ssTwinGreen)
+                Text("Sign in")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Color.ssTwinGreen)
+            }
+            .opacity(pulsePhase ? 1.0 : 0.5)
+            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulsePhase)
+            .onAppear { pulsePhase = true }
             .contentShape(Rectangle())
             .onTapGesture { chatViewModel.onNotchTap?() }
+        }
     }
 }
 

@@ -24,17 +24,20 @@ final class NotchOverlayController: NSObject {
     // Track current state: 0=compact, 1=status mini, 2=full chat
     private var isExpanded = false
 
-    override init() {
+    private(set) var authManager: GoogleAuthManager
+
+    init(authManager: GoogleAuthManager) {
         let viewModel = ChatViewModel()
         self.chatViewModel = viewModel
+        self.authManager = authManager
 
         self.dynamicNotch = DynamicNotch(
             hoverBehavior: [.keepVisible, .hapticFeedback],
             style: .auto
         ) {
-            ExpandedNotchContent(chatViewModel: viewModel)
+            ExpandedNotchContent(chatViewModel: viewModel, authManager: authManager)
         } compactLeading: {
-            CompactLeadingContent(chatViewModel: viewModel)
+            CompactLeadingContent(chatViewModel: viewModel, authManager: authManager)
         } compactTrailing: {
             CompactTrailingContent(chatViewModel: viewModel)
         }
