@@ -100,24 +100,20 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
 
     // MARK: - Positioning
 
-    private func positionPanel() {
-        guard let screen = NSScreen.main else { return }
+    /// Compute the panel frame for a given state, anchored below the notch/menu bar
+    private func frameForState(_ state: PanelState) -> NSRect {
+        guard let screen = NSScreen.main else { return .zero }
         let screenFrame = screen.frame
         let visibleFrame = screen.visibleFrame
-        let size = panelState.size
-
-        // The menu bar height tells us where the notch ends
-        // visibleFrame.maxY is the bottom of the menu bar
-        // screenFrame.maxY is the absolute top of the screen (behind the notch)
         let menuBarHeight = screenFrame.maxY - visibleFrame.maxY
-        // Position just below the menu bar / notch area
+        let size = state.size
         let originX = screenFrame.midX - size.width / 2
         let originY = screenFrame.maxY - menuBarHeight - size.height
+        return NSRect(x: originX, y: originY, width: size.width, height: size.height)
+    }
 
-        panel.setFrame(
-            NSRect(x: originX, y: originY, width: size.width, height: size.height),
-            display: true
-        )
+    private func positionPanel() {
+        panel.setFrame(frameForState(panelState), display: true)
     }
 
     // MARK: - State Transitions
@@ -132,22 +128,9 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
                 controlPoints: 0.34, 1.56, 0.64, 1.0 // spring-like overshoot
             )
             context.allowsImplicitAnimation = true
-
-            guard let screen = NSScreen.main else { return }
-            let screenFrame = screen.frame
-            let visibleFrame = screen.visibleFrame
-            let menuBarHeight = screenFrame.maxY - visibleFrame.maxY
-            let size = newState.size
-            let originX = screenFrame.midX - size.width / 2
-            let originY = screenFrame.maxY - menuBarHeight - size.height
-
-            panel.animator().setFrame(
-                NSRect(x: originX, y: originY, width: size.width, height: size.height),
-                display: true
-            )
+            panel.animator().setFrame(frameForState(newState), display: true)
         }
 
-        // Update content after animation starts
         updatePanelContent()
     }
 
@@ -253,15 +236,15 @@ struct ExpandedView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Second Self")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(Color(hex: 0xF5F5F7))
+                        .foregroundColor(Color.ssTextPrimary)
 
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(isConnected ? Color(hex: 0x30D158) : Color(hex: 0xFF453A))
+                            .fill(isConnected ? Color.ssSuccess : Color.ssError)
                             .frame(width: 6, height: 6)
                         Text(statusText)
                             .font(.system(size: 11))
-                            .foregroundColor(Color(hex: 0x8E8E93))
+                            .foregroundColor(Color.ssTextSecondary)
                     }
                 }
 
@@ -272,10 +255,10 @@ struct ExpandedView: View {
         .frame(width: 300, height: 120)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(hex: 0x1C1C1E))
+                .fill(Color.ssSurface)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color(hex: 0x333333), lineWidth: 0.5)
+                        .stroke(Color.ssBorder, lineWidth: 0.5)
                 )
         )
         .contentShape(Rectangle())
@@ -309,29 +292,29 @@ struct FullChatView: View {
 
                 Text("Second Self")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color(hex: 0xF5F5F7))
+                    .foregroundColor(Color.ssTextPrimary)
 
                 Spacer()
 
                 // Connection status dot
                 Circle()
-                    .fill(chatViewModel.isConnected ? Color(hex: 0x30D158) : Color(hex: 0xFF453A))
+                    .fill(chatViewModel.isConnected ? Color.ssSuccess : Color.ssError)
                     .frame(width: 6, height: 6)
 
                 // Close button
                 Button(action: onClose) {
                     Image(systemName: "chevron.up")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color(hex: 0x8E8E93))
+                        .foregroundColor(Color.ssTextSecondary)
                 }
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(Color(hex: 0x0D0D0F))
+            .background(Color.ssBackground)
 
             Divider()
-                .background(Color(hex: 0x333333))
+                .background(Color.ssBorder)
 
             // Chat messages + input
             ChatView(viewModel: chatViewModel)
@@ -339,10 +322,10 @@ struct FullChatView: View {
         .frame(width: 420, height: 560)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color(hex: 0x1C1C1E))
+                .fill(Color.ssSurface)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color(hex: 0x333333), lineWidth: 0.5)
+                        .stroke(Color.ssBorder, lineWidth: 0.5)
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 16))

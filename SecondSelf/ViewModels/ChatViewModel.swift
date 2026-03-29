@@ -11,11 +11,10 @@ final class ChatViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var inputText: String = ""
 
-    private let orchestratorURL = URL(string: "http://localhost:8420/chat")!
+    private let orchestratorURL = URL(string: ServerConfig.chatEndpoint)!
     private var sseTask: URLSessionDataTask?
     private var reconnectTimer: Timer?
     private var currentTwinMessageID: UUID?
-    private let sseParser = SSEParser()
     private let audioManager = AudioManager()
 
     private lazy var urlSession: URLSession = {
@@ -74,14 +73,15 @@ final class ChatViewModel: ObservableObject {
         // Start SSE stream via delegate-based data task
         sseTask = urlSession.dataTask(with: request)
         sseTask?.resume()
-        isConnected = true
     }
 
     // MARK: - SSE Event Handling
 
     func handleSSEEvent(eventType: String, data: String) {
-        switch eventType {
-        case "state":
+        guard let event = SSEEventType(rawValue: eventType) else { return }
+
+        switch event {
+        case .state:
             // Data is JSON: {"state": "thinking"} or {"state": "complete", "message": "Done!"}
             if let jsonData = data.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
@@ -94,7 +94,7 @@ final class ChatViewModel: ObservableObject {
                 }
             }
 
-        case "token":
+        case .token:
             // Data is JSON: {"text": "Hello"}
             if let jsonData = data.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
@@ -102,13 +102,13 @@ final class ChatViewModel: ObservableObject {
                 appendTokenToCurrentTwinMessage(text)
             }
 
-        case "tool_call":
+        case .toolCall:
             handleToolCall(data: data)
 
-        case "tool_result":
+        case .toolResult:
             handleToolResult(data: data)
 
-        case "error":
+        case .error:
             twinState = .error
             // Data is JSON: {"message": "description"}
             var errorText = data
@@ -126,12 +126,7 @@ final class ChatViewModel: ObservableObject {
             messages.append(errorMessage)
             currentTwinMessageID = nil
 
-        case "ping":
-            // Keepalive, ignore
-            break
-
-        default:
-            // Unknown event type, ignore
+        case .ping:
             break
         }
     }

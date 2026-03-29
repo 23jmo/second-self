@@ -55,7 +55,7 @@ struct ChatView: View {
                 .padding(.trailing, 16)
                 .padding(.bottom, 72) // Above the input bar
         }
-        .background(Color(hex: 0x1C1C1E))
+        .background(Color.ssSurface)
     }
 
     @ViewBuilder
@@ -87,7 +87,7 @@ struct TwinWorkingIndicator: View {
                 // Animated dots
                 ForEach(0..<3, id: \.self) { index in
                     Circle()
-                        .fill(Color(hex: 0xB5B055))
+                        .fill(Color.ssTwinGreen)
                         .frame(width: 5, height: 5)
                         .opacity(index < dotCount ? 1.0 : 0.3)
                 }
@@ -95,16 +95,16 @@ struct TwinWorkingIndicator: View {
                 Text(state == .thinking ? "Twin is thinking" : "Twin is working")
                     .font(.system(size: 11))
                     .italic()
-                    .foregroundColor(Color(hex: 0x8E8E93))
+                    .foregroundColor(Color.ssTextSecondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(
                 Capsule()
-                    .fill(Color(hex: 0x1C1C1E))
+                    .fill(Color.ssSurface)
                     .overlay(
                         Capsule()
-                            .stroke(Color(hex: 0x333333), lineWidth: 0.5)
+                            .stroke(Color.ssBorder, lineWidth: 0.5)
                     )
             )
 

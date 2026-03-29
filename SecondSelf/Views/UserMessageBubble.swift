@@ -15,18 +15,18 @@ struct UserMessageBubble: View {
             VStack(alignment: .trailing, spacing: 4) {
                 Text(text)
                     .font(.system(size: 13))
-                    .foregroundColor(Color(hex: 0xF5F5F7))
+                    .foregroundColor(Color.ssTextPrimary)
                     .textSelection(.enabled)
 
                 Text(formattedTime)
                     .font(.system(size: 10))
-                    .foregroundColor(Color(hex: 0x8E8E93))
+                    .foregroundColor(Color.ssTextSecondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(hex: 0x2C2C2E))
+                    .fill(Color.ssUserBubble)
             )
         }
     }

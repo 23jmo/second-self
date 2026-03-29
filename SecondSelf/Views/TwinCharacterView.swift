@@ -17,9 +17,6 @@ struct TwinCharacterView: View {
     @State private var bounceScale: CGFloat = 1.0
     @State private var errorTilt: Double = 0
 
-    private var twinGreen: Color {
-        Color(hex: 0xB5B055)
-    }
 
     private var headSize: CGFloat {
         compact ? 18 : 28
@@ -37,18 +34,18 @@ struct TwinCharacterView: View {
         VStack(spacing: compact ? 1 : 2) {
             // Head
             Circle()
-                .fill(twinGreen)
+                .fill(Color.ssTwinGreen)
                 .frame(width: headSize, height: headSize)
 
             // Body
             Ellipse()
-                .fill(twinGreen.opacity(0.85))
+                .fill(Color.ssTwinGreen.opacity(0.85))
                 .frame(width: bodyWidth, height: bodyHeight)
         }
         .scaleEffect(breatheScale * bounceScale)
         .offset(y: bobOffset)
         .rotationEffect(.degrees(wiggleRotation + errorTilt))
-        .shadow(color: twinGreen.opacity(0.2), radius: 4)
+        .shadow(color: Color.ssTwinGreen.opacity(0.2), radius: 4)
         .onAppear {
             applyAnimation(for: twinState)
         }

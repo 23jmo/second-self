@@ -17,7 +17,7 @@ struct ChatInputBar: View {
             TextField("Message your Twin...", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
-                .foregroundColor(Color(hex: 0xF5F5F7))
+                .foregroundColor(Color.ssTextPrimary)
                 .focused($isFocused)
                 .onSubmit {
                     sendIfValid()
@@ -37,12 +37,12 @@ struct ChatInputBar: View {
         .padding(.vertical, 8)
         .background(
             Capsule()
-                .fill(Color(hex: 0x2C2C2E))
+                .fill(Color.ssUserBubble)
         )
     }
 
     private var twinGreen: Color {
-        Color(hex: 0xB5B055)
+        Color.ssTwinGreen
     }
 
     private var canSend: Bool {

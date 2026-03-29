@@ -14,21 +14,21 @@ struct TwinMessageBubble: View {
                 Text(text)
                     .font(.system(size: 13))
                     .italic() // Twin has its own "voice"
-                    .foregroundColor(Color(hex: 0xF5F5F7))
+                    .foregroundColor(Color.ssTextPrimary)
                     .textSelection(.enabled)
 
                 Text(formattedTime)
                     .font(.system(size: 10))
-                    .foregroundColor(Color(hex: 0x8E8E93))
+                    .foregroundColor(Color.ssTextSecondary)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(hex: 0x1C1C1E))
+                    .fill(Color.ssSurface)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color(hex: 0x333333), lineWidth: 0.5)
+                            .stroke(Color.ssBorder, lineWidth: 0.5)
                     )
             )
 

@@ -25,7 +25,7 @@ struct VNCPipView: View {
                         .aspectRatio(contentMode: .fill)
                 } else {
                     Rectangle()
-                        .fill(Color(hex: 0x0D0D0F))
+                        .fill(Color.ssBackground)
                 }
             }
             .frame(width: thumbnailSize.width, height: thumbnailSize.height)
@@ -33,13 +33,13 @@ struct VNCPipView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(
-                        twinState == .working ? twinGreen : Color(hex: 0x333333),
+                        twinState == .working ? Color.ssTwinGreen : Color.ssBorder,
                         lineWidth: twinState == .working ? 1.5 : 0.5
                     )
             )
             .shadow(
                 color: twinState == .working
-                    ? twinGreen.opacity(0.3)
+                    ? Color.ssTwinGreen.opacity(0.3)
                     : Color.black.opacity(0.3),
                 radius: twinState == .working ? 8 : 4
             )
@@ -48,11 +48,11 @@ struct VNCPipView: View {
             if streamer.currentFrame != nil {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(Color(hex: 0xFF453A))
+                        .fill(Color.ssError)
                         .frame(width: 5, height: 5)
                     Text("LIVE")
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(Color(hex: 0xF5F5F7))
+                        .foregroundColor(Color.ssTextPrimary)
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -79,9 +79,6 @@ struct VNCPipView: View {
         }
     }
 
-    private var twinGreen: Color {
-        Color(hex: 0xB5B055)
-    }
 
     // MARK: - Expanded VNC Window
 
@@ -127,12 +124,12 @@ struct ExpandedVNCView: View {
                 VStack(spacing: 8) {
                     Text("Connecting to Twin's desktop...")
                         .font(.system(size: 14))
-                        .foregroundColor(Color(hex: 0x8E8E93))
+                        .foregroundColor(Color.ssTextSecondary)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(hex: 0x0D0D0F))
+        .background(Color.ssBackground)
     }
 }
 
@@ -150,8 +147,7 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
     private let boundary = "--frame".data(using: .utf8)!
     private var isRunning = false
 
-    // Try multiple ports (agent-server falls back if port busy)
-    private let ports = [8421, 8422, 8423]
+    private let ports = [ServerConfig.agentServerPort]
     private var currentPortIndex = 0
     private var retryTimer: Timer?
 

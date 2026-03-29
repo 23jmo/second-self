@@ -18,17 +18,17 @@ struct ToolCallPill: View {
                 HStack(spacing: 6) {
                     Image(systemName: "wrench.and.screwdriver.fill")
                         .font(.system(size: 9))
-                        .foregroundColor(twinGreen)
+                        .foregroundColor(Color.ssTwinGreen)
 
                     Text(tool)
                         .font(.system(size: 11, design: .monospaced))
                         .fontWeight(.medium)
-                        .foregroundColor(twinGreen)
+                        .foregroundColor(Color.ssTwinGreen)
 
                     if !args.isEmpty {
                         Text(argsPreview)
                             .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(twinGreen.opacity(0.7))
+                            .foregroundColor(Color.ssTwinGreen.opacity(0.7))
                             .lineLimit(1)
                     }
 
@@ -38,7 +38,7 @@ struct ToolCallPill: View {
                         Button(action: { isExpanded.toggle() }) {
                             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(twinGreen.opacity(0.6))
+                                .foregroundColor(Color.ssTwinGreen.opacity(0.6))
                         }
                         .buttonStyle(.plain)
                     }
@@ -48,7 +48,7 @@ struct ToolCallPill: View {
                 if isExpanded, let result = result {
                     Text(result)
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(Color(hex: 0xF5F5F7).opacity(0.8))
+                        .foregroundColor(Color.ssTextPrimary.opacity(0.8))
                         .lineLimit(8)
                         .padding(.top, 2)
                 }
@@ -57,10 +57,10 @@ struct ToolCallPill: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(twinGreen.opacity(0.1))
+                    .fill(Color.ssTwinGreen.opacity(0.1))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(twinGreen.opacity(0.4), lineWidth: 0.5)
+                            .stroke(Color.ssTwinGreen.opacity(0.4), lineWidth: 0.5)
                     )
             )
 
@@ -68,9 +68,6 @@ struct ToolCallPill: View {
         }
     }
 
-    private var twinGreen: Color {
-        Color(hex: 0xB5B055)
-    }
 
     private var argsPreview: String {
         let pairs = args.map { "\($0.key): \($0.value)" }
