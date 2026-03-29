@@ -58,7 +58,8 @@ struct ChatInputBar: View {
     private func sendIfValid() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty && isEnabled else { return }
-        onSend(trimmed)
+        isFocused = false
         text = ""
+        onSend(trimmed)
     }
 }
