@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/python3</string>
+        <string>/usr/local/share/second-self/python/bin/python3</string>
         <string>/Users/secondself/second-self/agent-server/server.py</string>
     </array>
 
@@ -26,7 +26,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/secondself/Library/Python/3.14/bin:/Users/secondself/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/usr/local/share/second-self/python/bin:/Users/secondself/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>/Users/secondself</string>
         <key>TMPDIR</key>

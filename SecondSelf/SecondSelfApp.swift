@@ -80,9 +80,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusLog("No session, sign-in required")
         }
 
-        // Always create the notch — it shows sign-in or chat based on auth state
+        // Always create the notch — it shows sign-in, setup wizard, or chat
+        let setupNeeded = needsFirstRunSetup
         Task { @MainActor in
-            overlayController = NotchOverlayController(authManager: auth)
+            let controller = NotchOverlayController(authManager: auth)
+            overlayController = controller
+            if setupNeeded {
+                controller.chatViewModel.needsSetup = true
+            }
         }
 
         // Register global hotkey: Cmd+Shift+T
@@ -286,6 +291,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Returns true if first-run setup is needed (user missing or agent not healthy).
+    /// The setup wizard is shown in the notch panel via NotchOverlayController.
     private func checkSecondSelfUser() {
         let check = Process()
         check.executableURL = URL(fileURLWithPath: "/usr/bin/id")
@@ -296,19 +303,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         check.waitUntilExit()
 
         if check.terminationStatus != 0 {
-            print("[SecondSelf] ⚠️  'secondself' user not found!")
-            print("[SecondSelf] Run: ./setup/provision.sh")
-            DispatchQueue.main.async {
-                let alert = NSAlert()
-                alert.messageText = "First-Time Setup Required"
-                alert.informativeText = "The 'secondself' user doesn't exist yet.\n\nOpen Terminal and run:\n  cd ~/second-self && ./setup/provision.sh"
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            }
+            statusLog("secondself user not found — setup wizard will show")
         } else {
-            print("[SecondSelf] secondself user found ✓")
+            statusLog("secondself user found")
         }
+    }
+
+    /// Whether the first-run setup wizard should be shown.
+    var needsFirstRunSetup: Bool {
+        // If setup was already completed, skip
+        if UserDefaults.standard.bool(forKey: "setupComplete") { return false }
+
+        // Check if secondself user exists
+        let check = Process()
+        check.executableURL = URL(fileURLWithPath: "/usr/bin/id")
+        check.arguments = ["secondself"]
+        check.standardOutput = FileHandle.nullDevice
+        check.standardError = FileHandle.nullDevice
+        try? check.run()
+        check.waitUntilExit()
+
+        // If user doesn't exist, definitely needs setup
+        if check.terminationStatus != 0 { return true }
+
+        // If agent server isn't responding, needs setup
+        // (quick synchronous check — don't block for long)
+        let semaphore = DispatchSemaphore(value: 0)
+        var healthy = false
+        if let url = URL(string: "http://localhost:8421/health") {
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 2
+            URLSession.shared.dataTask(with: request) { data, response, _ in
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    healthy = true
+                }
+                semaphore.signal()
+            }.resume()
+            _ = semaphore.wait(timeout: .now() + 3)
+        }
+
+        return !healthy
     }
 
     private func clearAgentBrowser() {
@@ -381,6 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let userHome = envVars["HOME"] ?? NSHomeDirectory()
         let candidates = [
+            "/usr/local/share/second-self/python/bin/python3",
             "\(userHome)/.pyenv/versions/3.11.8/bin/python3",
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",

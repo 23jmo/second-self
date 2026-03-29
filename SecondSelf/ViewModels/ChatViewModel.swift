@@ -23,6 +23,9 @@ final class ChatViewModel: ObservableObject {
     /// Tracks notch expansion: 0=compact, 1=status mini, 2=full chat
     @Published var expansionStage: Int = 0
 
+    /// True when first-run setup wizard should be shown instead of chat
+    @Published var needsSetup: Bool = false
+
     /// Callback for notch tap-to-expand. Set by NotchOverlayController.
     var onNotchTap: (() -> Void)?
     /// Callback for closing expanded notch. Set by NotchOverlayController.

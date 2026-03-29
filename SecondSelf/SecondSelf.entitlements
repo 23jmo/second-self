@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for hardened runtime with code signing -->
+
+    <!-- Allow loading unsigned libraries (embedded Python + pip packages) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Allow unsigned executable memory (needed by some Python native extensions) -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Allow JIT (needed by some Python native extensions like cffi) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Network: app connects to localhost Python servers -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Microphone: voice input for chat -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- Apple Events: global hotkey monitoring (Cmd+Shift+T) -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>

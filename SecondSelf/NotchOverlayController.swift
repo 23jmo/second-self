@@ -371,7 +371,7 @@ final class NotchOverlayController: NSObject {
         // Clamp X so the mascot stays within the notch width
         let minX = notchFrame.minX
         let maxX = notchFrame.maxX - mascotWidth
-        let targetX = (cursorX - mascotWidth / 2).clamped(to: minX...maxX)
+        let targetX = (cursorX - mascotWidth / 2).clampedTo(min: minX, max: maxX)
 
         // Lightweight animation — just reposition X, no alpha change
         NSAnimationContext.runAnimationGroup { context in
@@ -383,7 +383,7 @@ final class NotchOverlayController: NSObject {
         }
     }
 
-    private func setPeepingVisible(_ visible: Bool) {
+    private func setPeepingVisible(_ visible: Bool, cursorX: CGFloat? = nil) {
         peepingVisible = visible
         guard let window = peepingWindow, let screen = NSScreen.main else { return }
 
@@ -392,13 +392,23 @@ final class NotchOverlayController: NSObject {
         let hiddenY = notchFrame.minY
         let visibleY = notchFrame.minY - 30
 
+        // Use cursor X if provided, otherwise center
+        let minX = notchFrame.minX
+        let maxX = notchFrame.maxX - mascotWidth
+        let xPosition: CGFloat
+        if let cx = cursorX {
+            xPosition = (cx - mascotWidth / 2).clampedTo(min: minX, max: maxX)
+        } else {
+            xPosition = notchFrame.midX - mascotWidth / 2
+        }
+
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.35
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().alphaValue = visible ? 1.0 : 0.0
             window.animator().setFrame(
                 NSRect(
-                    x: notchFrame.midX - mascotWidth / 2,
+                    x: xPosition,
                     y: visible ? visibleY : hiddenY,
                     width: mascotWidth,
                     height: self.peepMascotHeight
@@ -586,6 +596,14 @@ final class NotchOverlayController: NSObject {
         peepingWindow?.close()
         danglingWindow?.close()
         vncWindow?.close()
+    }
+}
+
+// MARK: - Helpers
+
+private extension CGFloat {
+    func clampedTo(min lower: CGFloat, max upper: CGFloat) -> CGFloat {
+        Swift.min(Swift.max(self, lower), upper)
     }
 }
 

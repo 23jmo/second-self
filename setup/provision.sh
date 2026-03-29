@@ -45,13 +45,16 @@ echo ""
 echo "[3/10] Installing Python dependencies..."
 # Use /opt/homebrew/bin/python3 to match the LaunchAgent Python path.
 # Packages installed under /usr/bin/python3 are invisible to Homebrew Python.
-PYTHON="/opt/homebrew/bin/python3"
+PYTHON="/usr/local/share/second-self/python/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="/opt/homebrew/bin/python3"
+fi
 if [ ! -x "$PYTHON" ]; then
     PYTHON="/usr/local/bin/python3"
 fi
 if [ ! -x "$PYTHON" ]; then
     PYTHON="/usr/bin/python3"
-    echo "  ⚠️  Homebrew Python not found, falling back to system Python."
+    echo "  ⚠️  No bundled or Homebrew Python found, falling back to system Python."
 fi
 echo "  Using: $PYTHON"
 

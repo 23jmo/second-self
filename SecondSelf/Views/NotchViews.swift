@@ -16,7 +16,16 @@ struct ExpandedNotchContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !authManager.isAuthenticated {
+            if chatViewModel.needsSetup && chatViewModel.expansionStage >= 2 {
+                // First-run setup wizard
+                SetupWizardView(authManager: authManager) {
+                    chatViewModel.needsSetup = false
+                }
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .bottom)),
+                        removal: .opacity
+                    ))
+            } else if !authManager.isAuthenticated {
                 // Not signed in — show sign-in view
                 if chatViewModel.expansionStage >= 2 {
                     signInExpandedContent
@@ -46,6 +55,7 @@ struct ExpandedNotchContent: View {
             }
         }
         .animation(.ssPanelSpring, value: chatViewModel.expansionStage)
+        .animation(.ssPanelSpring, value: chatViewModel.needsSetup)
         .animation(.ssPanelSpring, value: authManager.isAuthenticated)
         .environment(\.colorScheme, .dark)
     }
