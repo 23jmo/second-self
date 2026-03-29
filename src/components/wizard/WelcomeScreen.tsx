@@ -64,7 +64,7 @@ export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps)
 
       <div className="flex flex-col items-center gap-7 w-full">
         <div className="flex flex-col items-center w-full">
-          <h1 className="text-3xl sm:text-4xl lg:text-[56px] lg:leading-[64px] font-normal text-black text-center whitespace-nowrap">
+          <h1 className="text-3xl sm:text-4xl lg:text-[clamp(2rem,5vw,56px)] lg:leading-[64px] font-normal text-black text-center whitespace-nowrap">
             meet your{" "}
             <span className="font-semibold text-primary">second self</span>
           </h1>
