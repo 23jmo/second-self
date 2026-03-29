@@ -401,8 +401,8 @@ final class NotchOverlayController: NSObject {
 
     // MARK: - Floating VNC Window
 
-    private let vncWidth: CGFloat = 420
-    private let vncHeight: CGFloat = 280
+    private let vncWidth: CGFloat = 458
+    private let vncHeight: CGFloat = 308
 
     /// Read the actual bottom edge of the DynamicNotchKit panel window.
     private func notchPanelBottomY() -> CGFloat {
@@ -435,7 +435,7 @@ final class NotchOverlayController: NSObject {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        window.level = .statusBar + 1
+        window.level = .statusBar - 1  // Below the notch panel so overlap tucks behind
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
 
         let hostingView = NSHostingView(
@@ -463,9 +463,10 @@ final class NotchOverlayController: NSObject {
     private func setVNCWindowVisible(_ visible: Bool) {
         guard let window = vncWindow, let screen = NSScreen.main else { return }
 
-        // Read the live panel bottom edge every time
+        // Read the live panel bottom edge; overlap by 6pt so the seam disappears
         let panelBottom = notchPanelBottomY()
-        let visibleY = panelBottom - vncHeight
+        let overlap: CGFloat = 8
+        let visibleY = panelBottom - vncHeight + overlap
         let hiddenY = panelBottom
 
         let targetFrame = NSRect(
@@ -503,29 +504,27 @@ struct FloatingVNCContent: View {
     var onTakeControl: (() -> Void)?
 
     var body: some View {
-        ZStack {
+        VStack(spacing: 0) {
+            // VNC stream
             if chatViewModel.showVNCFeed {
                 VNCPipView(twinState: chatViewModel.twinState, onTakeControl: onTakeControl)
                     .padding(.horizontal, 6)
-                    .padding(.bottom, 6)
+                    .padding(.top, 2)
             }
 
-            // Dismiss button — top right
-            VStack {
+            // Bottom lip with shelve button
+            Button(action: { chatViewModel.dismissVNCFeed() }) {
                 HStack {
                     Spacer()
-                    Button(action: { chatViewModel.dismissVNCFeed() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white.opacity(0.7))
-                            .padding(5)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(10)
+                    Image(systemName: "chevron.compact.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.4))
+                    Spacer()
                 }
-                Spacer()
+                .frame(height: 26)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
         .background(Color.ssNotchBlack)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))

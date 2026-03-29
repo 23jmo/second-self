@@ -12,111 +12,61 @@ struct VNCPipView: View {
 
     @StateObject private var streamer = MJPEGStreamer()
     @State private var isHovered: Bool = false
-    @State private var liveBlink: Bool = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header bar — traffic lights, title, LIVE indicator
-            headerBar
+        ZStack(alignment: .bottomTrailing) {
+            // Live desktop feed
+            Group {
+                if let image = streamer.currentFrame {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    LinearGradient(
+                        colors: [
+                            Color(hex: 0x262629),
+                            Color(hex: 0x262629).opacity(0.6),
+                            Color.white.opacity(0.05)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
 
-            // Live desktop feed — fills all remaining space
-            ZStack(alignment: .bottomTrailing) {
-                Group {
-                    if let image = streamer.currentFrame {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        // Glass-like gradient placeholder
-                        LinearGradient(
-                            colors: [
-                                Color(hex: 0x262629),
-                                Color(hex: 0x262629).opacity(0.6),
-                                Color.white.opacity(0.05)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+            // Take Control overlay on hover
+            if isHovered {
+                Button(action: { launchTigerVNC(); onTakeControl?() }) {
+                    Text("Take Control")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill(.ultraThinMaterial)
+                                .overlay(
+                                    Capsule()
+                                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                                )
                         )
-                    }
                 }
-                .frame(maxWidth: .infinity)
-                .clipped()
-
-                // Take Control overlay on hover
-                if isHovered {
-                    Button(action: { launchTigerVNC(); onTakeControl?() }) {
-                        Text("Take Control")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(
-                                Capsule()
-                                    .fill(.ultraThinMaterial)
-                                    .overlay(
-                                        Capsule()
-                                            .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-                                    )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .padding(10)
-                    .transition(.opacity)
-                }
+                .buttonStyle(.plain)
+                .padding(10)
+                .transition(.opacity)
             }
         }
         .background(Color.ssNotchBlack)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
         .animation(.ssMicro, value: isHovered)
         .onHover { hovering in isHovered = hovering }
         .onAppear {
             streamer.start()
-            withAnimation(.ssLiveBlink.repeatForever(autoreverses: true)) {
-                liveBlink = true
-            }
         }
         .onDisappear {
             streamer.stop()
         }
-    }
-
-    // MARK: - Header Bar
-
-    private var headerBar: some View {
-        HStack(spacing: 0) {
-            // Traffic light dots
-            HStack(spacing: 4) {
-                Circle().fill(Color(hex: 0xFF5F57)).frame(width: 6, height: 6)
-                Circle().fill(Color(hex: 0xFEBC2E)).frame(width: 6, height: 6)
-                Circle().fill(Color(hex: 0x28C840)).frame(width: 6, height: 6)
-            }
-            .padding(.leading, 8)
-
-            Spacer()
-
-            // Title
-            Text("Twin's Desktop")
-                .font(.system(size: 8, weight: .medium))
-                .foregroundColor(.white.opacity(0.5))
-                .tracking(0.64)
-
-            Spacer()
-
-            // LIVE indicator
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(Color.ssTwinGreen)
-                    .frame(width: 5, height: 5)
-                    .opacity(liveBlink ? 1.0 : 0.3)
-                Text("LIVE")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundColor(Color.ssTwinGreen)
-                    .tracking(0.64)
-            }
-            .padding(.trailing, 8)
-        }
-        .frame(height: 18)
-        .background(Color.ssNotchBlack)
     }
 
     private func launchTigerVNC() {

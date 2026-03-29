@@ -187,21 +187,7 @@ struct ExpandedNotchContent: View {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // VNC toggle + Input bar
-            HStack(spacing: 6) {
-                Button(action: { chatViewModel.toggleVNCFeed() }) {
-                    Image(systemName: chatViewModel.showVNCFeed ? "desktopcomputer.trianglebadge.exclamationmark" : "desktopcomputer")
-                        .font(.system(size: 12))
-                        .foregroundColor(chatViewModel.showVNCFeed ? Color.ssTwinGreen : Color.ssTextSecondary.opacity(0.5))
-                }
-                .buttonStyle(.plain)
-                .help("Toggle Twin's Desktop")
-
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-
+            // Input bar
             ChatInputBar(
                 text: $chatViewModel.inputText,
                 isEnabled: chatViewModel.twinState != .thinking && chatViewModel.twinState != .working,
@@ -214,8 +200,22 @@ struct ExpandedNotchContent: View {
                 onPermissionTap: { chatViewModel.requestMicPermission() }
             )
             .padding(.horizontal, 12)
-            .padding(.bottom, 12)
+            .padding(.bottom, 8)
             .onAppear { chatViewModel.checkMicPermission() }
+
+            // Bottom lip — show/hide PiP
+            Button(action: { chatViewModel.toggleVNCFeed() }) {
+                HStack {
+                    Spacer()
+                    Image(systemName: chatViewModel.showVNCFeed ? "chevron.compact.up" : "chevron.compact.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.4))
+                    Spacer()
+                }
+                .frame(height: 26)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .frame(width: 420, height: 560)
         .background(Color.ssNotchBlack)
