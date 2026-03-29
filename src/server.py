@@ -11,12 +11,13 @@ Endpoints:
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-from fastapi import FastAPI, Cookie, HTTPException
+from fastapi import FastAPI, Cookie, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.auth.auth0_oauth import router as auth_router
@@ -51,7 +52,73 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 log = logging.getLogger("second-self")
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Second Self — Deep Memory Pipeline", version="0.3.0")
+
+# ---------------------------------------------------------------------------
+# Scheduler boot
+# ---------------------------------------------------------------------------
+
+def _boot_scheduler():
+    """Create and start the background scheduler. Returns scheduler or None."""
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
+        from daemons.automation_scheduler import (
+            register_automation,
+            _on_job_executed,
+            _on_job_error,
+        )
+        from utils.automation_store import get_all_automations
+        from utils.firebase_context import load_user_context
+
+        scheduler = BackgroundScheduler(
+            job_defaults={"misfire_grace_time": 300},
+        )
+        scheduler.add_listener(_on_job_executed, EVENT_JOB_EXECUTED)
+        scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
+        scheduler.start()
+        log.info("Background scheduler started")
+
+        # Load automations for the latest authenticated user
+        result = get_latest_session()
+        if result:
+            session_id, token_data = result
+            uid = token_data.uid or get_uid_for_session(session_id)
+            if uid:
+                user_context = load_user_context(uid)
+                automations = get_all_automations(uid, enabled_only=True)
+                count = sum(
+                    1 for auto in automations
+                    if register_automation(scheduler, uid, auto, user_context)
+                )
+                log.info("Registered %d automations for user %s on boot", count, uid)
+
+        return scheduler
+    except Exception as exc:
+        log.warning("Scheduler boot failed (non-fatal): %s", exc)
+        return None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Boot scheduler on startup, shut down on exit."""
+    scheduler = _boot_scheduler()
+    app.state.scheduler = scheduler
+
+    from src.agent.tool_defs import set_scheduler_ref
+    set_scheduler_ref(scheduler)
+
+    yield
+
+    if scheduler:
+        scheduler.shutdown(wait=False)
+        log.info("Scheduler shut down")
+
+
+app = FastAPI(
+    title="Second Self — Deep Memory Pipeline",
+    version="0.4.0",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -186,6 +253,83 @@ async def chat(body: ChatRequest):
         response=response_text,
         actions_taken=actions_taken,
     )
+
+
+# --- Automation endpoints ---
+
+@app.post("/automations/create")
+async def create_automation_endpoint(body: ChatRequest):
+    """Parse and save a new automation from natural language."""
+    uid = get_uid_for_session(body.session_id)
+
+    from agents.automation_parser import parse_automation
+    from utils.automation_store import save_automation
+    from utils.firebase_context import load_user_context
+
+    user_context = load_user_context(uid)
+    spec = await parse_automation(body.message, user_context)
+
+    if spec.get("clarification_needed"):
+        return {"auto_id": None, "clarification": spec["clarification_needed"]}
+
+    auto_id = save_automation(uid, spec, source_message=body.message)
+
+    # Register with live scheduler
+    try:
+        from daemons.automation_scheduler import register_automation
+        scheduler = app.state.scheduler
+        if scheduler:
+            spec_with_id = {**spec, "id": auto_id, "enabled": True}
+            register_automation(scheduler, uid, spec_with_id, user_context)
+    except Exception as exc:
+        log.warning("Scheduler registration failed: %s", exc)
+
+    return {
+        "auto_id": auto_id,
+        "name": spec.get("name", ""),
+        "confirmation": spec.get("confirmation_message", "Created."),
+    }
+
+
+@app.post("/automations/manage")
+async def manage_automation_endpoint(body: ChatRequest):
+    """Manage automations via natural language (pause, resume, edit, delete, run)."""
+    uid = get_uid_for_session(body.session_id)
+
+    from agents.automation_manager import handle_manage_request, set_scheduler
+    from utils.firebase_context import load_user_context
+
+    scheduler = app.state.scheduler
+    if scheduler:
+        set_scheduler(scheduler)
+
+    user_context = load_user_context(uid)
+    reply = await handle_manage_request(uid, body.message, user_context)
+    return {"reply": reply}
+
+
+@app.get("/automations/list")
+async def list_automations_endpoint(session_id: str = Query(...)):
+    """List all automations for the authenticated user."""
+    uid = get_uid_for_session(session_id)
+
+    from utils.automation_store import get_all_automations
+
+    automations = get_all_automations(uid, enabled_only=False)
+    items = []
+    for a in automations:
+        trigger = a.get("trigger", {})
+        action = a.get("action", {})
+        items.append({
+            "id": a.get("id", ""),
+            "name": a.get("name", ""),
+            "enabled": a.get("enabled", False),
+            "trigger_type": trigger.get("type", ""),
+            "schedule": trigger.get("human_readable", trigger.get("cron", "")),
+            "action_function": action.get("function", ""),
+            "run_count": a.get("run_count", 0),
+        })
+    return {"automations": items, "count": len(items)}
 
 
 def _fallback_profile(name: str) -> SecondSelfProfile:

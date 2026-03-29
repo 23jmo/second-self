@@ -127,7 +127,14 @@ def _build_rich_system_prompt(p: RichProfile) -> str:
         f"you're missing — just ask {first_name}. Better to check than to guess wrong.\n\n"
         f"If {first_name} corrects something you drafted or rejects an action, acknowledge "
         f"what you got wrong. Adjust for next time.\n\n"
-        "You have full conversation history. Reference earlier messages when relevant."
+        "You have full conversation history. Reference earlier messages when relevant.\n\n"
+        "When the user asks to set up a recurring task, scheduled action, or automation, "
+        "use the create_automation tool with their exact request.\n\n"
+        "When the user asks to manage, pause, resume, edit, delete, or test-run an "
+        "automation, use the manage_automations tool.\n\n"
+        "When the user asks what automations they have, use the list_automations tool.\n\n"
+        "When the user types '/automation [name]' or asks to run an automation by name, "
+        "use the run_automation tool with that name."
     )
 
     return "\n\n".join(sections)
@@ -215,7 +222,14 @@ def _build_slim_system_prompt(profile: SecondSelfProfile) -> str:
         f"a contact or context, just ask. Better to check than to guess wrong.\n\n"
         f"If {first_name} corrects something you drafted or rejects an action, acknowledge what you "
         f"got wrong. Adjust for next time.\n\n"
-        f"You remember everything from this conversation. Never re-ask for something {first_name} already told you."
+        f"You remember everything from this conversation. Never re-ask for something {first_name} already told you.\n\n"
+        f"When {first_name} asks to set up a recurring task, scheduled action, or automation, "
+        f"use the create_automation tool with their exact request.\n\n"
+        f"When {first_name} asks to manage, pause, resume, edit, delete, or test-run an "
+        f"automation, use the manage_automations tool.\n\n"
+        f"When {first_name} asks what automations they have, use the list_automations tool.\n\n"
+        f"When {first_name} types '/automation [name]' or asks to run an automation by name, "
+        f"use the run_automation tool with that name."
     )
 
     return "\n\n".join(sections)
@@ -237,6 +251,10 @@ def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
         "create_presentation": lambda a: f"Created Google Slides: '{a.get('title')}'",
         "share_document": lambda a: f"Shared file with {a.get('email')} as {a.get('role', 'writer')}",
         "search_web": lambda a: f"Web search: {a.get('query')}",
+        "create_automation": lambda a: f"Creating automation: {a.get('user_request', '')[:60]}",
+        "manage_automations": lambda a: f"Managing automations: {a.get('user_request', '')[:60]}",
+        "list_automations": lambda a: "Listed all automations",
+        "run_automation": lambda a: f"Running automation: {a.get('name', '')[:60]}",
     }
     fn = summaries.get(tool_name)
     return fn(tool_input) if fn else str(tool_input)[:200]
@@ -312,7 +330,7 @@ async def handle_chat(
                     actions_taken.append(ActionTaken(tool=block.name, summary=summary))
 
                     try:
-                        result = await dispatch_tool(block.name, block.input, access_token)
+                        result = await dispatch_tool(block.name, block.input, access_token, uid=uid)
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,

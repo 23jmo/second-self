@@ -145,6 +145,25 @@ def get_uid_for_session(session_id: str) -> str:
     return hashlib.sha256(session_id.encode()).hexdigest()[:28]
 
 
+def get_access_token_for_uid(uid: str) -> str | None:
+    """Look up Google access token by Firebase UID.
+
+    Searches all sessions for a matching UID. Used by the background
+    scheduler to get tokens without an active HTTP session.
+    Returns None if no session found for that UID.
+    """
+    if not uid:
+        return None
+
+    store = _file_load()
+    # Iterate in reverse to return the most recently created session's token
+    for _session_id in reversed(list(store.keys())):
+        data = store[_session_id]
+        if data.get("uid") == uid and data.get("google_access_token"):
+            return data["google_access_token"]
+    return None
+
+
 def delete_session(session_id: str) -> None:
     store = _file_load()
     store.pop(session_id, None)
