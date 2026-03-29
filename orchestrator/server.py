@@ -23,10 +23,14 @@ import uuid
 import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Ensure sibling modules (productivity_tools) are importable regardless of
 # how this file is invoked (direct script vs uvicorn module import).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Also ensure the project root is importable (for utils.episodic_writer)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 import anthropic
 from dotenv import load_dotenv
@@ -147,6 +151,16 @@ current_job: dict = {
     "started_at": None,
     "message_queue": [],
 }
+
+# ---------------------------------------------------------------------------
+# Conversation history (persisted to Firestore when available)
+# ---------------------------------------------------------------------------
+
+_user_uid: str | None = None
+_user_name: str | None = None
+_chat_session_id: str = uuid.uuid4().hex
+_conversation_history: list = []
+MAX_HISTORY_MESSAGES = 40
 
 # Conversation history and cached profile kept across jobs
 
@@ -318,11 +332,13 @@ async def execute_tool_call(tool_name: str, arguments: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# System prompt builder
+# System prompt builder — reads identity/preferences/episodic from disk
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    "You are a digital twin controlling a macOS desktop with four types of tools:\n"
+_SECONDSELF_DIR = Path.home() / ".secondself"
+
+_TOOLS_AND_RULES = (
+    "You have four types of tools:\n"
     "\n"
     "BROWSER TOOLS (for any web task):\n"
     "  browser_goto(url), browser_snapshot(), browser_click(ref), browser_fill(ref, text),\n"
@@ -363,6 +379,121 @@ SYSTEM_PROMPT = (
     "Complete the user's task step by step."
 )
 
+# Cache: (mtime_identity, mtime_preferences, mtime_episodic) → prompt string
+_prompt_cache: dict[str, object] = {"key": None, "prompt": None}
+
+
+def _read_if_exists(path: Path) -> str | None:
+    """Read a file's text if it exists, else None."""
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else None
+    except OSError:
+        return None
+
+
+def _get_mtime(path: Path) -> float:
+    """Return mtime or 0 if the file doesn't exist."""
+    try:
+        return path.stat().st_mtime if path.exists() else 0.0
+    except OSError:
+        return 0.0
+
+
+def build_system_prompt() -> str:
+    """Build the system prompt, injecting memory files if they exist.
+
+    Caches the result until any of the source files change on disk.
+    Falls back to a generic tool-only prompt if no memory files exist.
+    """
+    identity_path = _SECONDSELF_DIR / "identity.md"
+    preferences_path = _SECONDSELF_DIR / "preferences.md"
+    episodic_path = _SECONDSELF_DIR / "episodic.md"
+
+    cache_key = (
+        _get_mtime(identity_path),
+        _get_mtime(preferences_path),
+        _get_mtime(episodic_path),
+    )
+    if _prompt_cache["key"] == cache_key and _prompt_cache["prompt"] is not None:
+        return _prompt_cache["prompt"]
+
+    identity_text = _read_if_exists(identity_path)
+    preferences_text = _read_if_exists(preferences_path)
+
+    # Load recent episodic events
+    episodic_section = ""
+    try:
+        from utils.episodic_writer import get_weighted_events
+        events = get_weighted_events(recent_n=20, total_n=30)
+        if events:
+            lines = []
+            for e in events:
+                lines.append(f"- {e['date']} | {e['category']} | {e['summary']}")
+            episodic_section = "\n".join(lines)
+    except Exception:
+        episodic_section = ""
+
+    # If no memory files exist yet, fall back to generic prompt
+    if not identity_text and not preferences_text and not episodic_section:
+        prompt = (
+            "You are a digital twin controlling a macOS desktop.\n\n"
+            + _TOOLS_AND_RULES
+        )
+        _prompt_cache["key"] = cache_key
+        _prompt_cache["prompt"] = prompt
+        print("[orchestrator] System prompt: generic (no memory files found)")
+        return prompt
+
+    # Extract the user's name from identity.md header
+    user_name = "the user"
+    if identity_text:
+        for line in identity_text.splitlines():
+            if line.startswith("# ") and "Identity Profile" in line:
+                user_name = line.replace("# ", "").replace("'s Identity Profile", "").strip()
+                break
+
+    first_name = user_name.split()[0] if user_name != "the user" else "there"
+
+    # Build the personality-aware prompt
+    sections = []
+
+    sections.append(
+        f"You are {first_name}'s digital twin.\n\n"
+        f"You are not an assistant. You are not a chatbot. You ARE {first_name}, "
+        f"running in parallel. You think how they think, you write how they write, "
+        f"you care about what they care about. When {first_name} asks you to send an "
+        f"email, the recipient should not be able to tell the difference between you "
+        f"and the real {first_name}.\n\n"
+        f"How you talk:\n"
+        f"Never use markdown. No bullet points, no bold text, no headers, no code blocks. "
+        f"Just plain conversational text, the way a real person types in a chat window. "
+        f"Write in short, natural sentences. Sound like {first_name} texting a coworker.\n\n"
+        f"How you act:\n"
+        f"You do things, you don't describe things. When {first_name} asks you to do "
+        f"something, use tools and get it done. No narration about what you \"would\" do. "
+        f"After you do something, confirm it in one short sentence. Done. Move on."
+    )
+
+    if identity_text:
+        sections.append(f"IDENTITY PROFILE:\n{identity_text}")
+
+    if preferences_text:
+        sections.append(f"PREFERENCES & SCHEDULE:\n{preferences_text}")
+
+    if episodic_section:
+        sections.append(f"RECENT HISTORY (things you've done or that happened):\n{episodic_section}")
+
+    sections.append(_TOOLS_AND_RULES)
+
+    prompt = "\n\n---\n\n".join(sections)
+    _prompt_cache["key"] = cache_key
+    _prompt_cache["prompt"] = prompt
+    print(f"[orchestrator] System prompt: personalized for {user_name} "
+          f"(identity={'yes' if identity_text else 'no'}, "
+          f"preferences={'yes' if preferences_text else 'no'}, "
+          f"episodic={len(episodic_section.splitlines()) if episodic_section else 0} events)")
+    return prompt
+
 
 # ---------------------------------------------------------------------------
 # Agent loop — non-streaming (backward compat for /command)
@@ -374,7 +505,8 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
     Returns a list of actions taken.
     """
     actions: list = []
-    messages: list = [{"role": "user", "content": task}]
+    _append_to_history("user", task)
+    messages: list = list(_conversation_history)
 
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
@@ -385,7 +517,7 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
         stop_reason = None
         had_error = False
 
-        async for event_type, event_data in call_claude_streaming(messages, SYSTEM_PROMPT, tools=ALL_TOOLS):
+        async for event_type, event_data in call_claude_streaming(messages, build_system_prompt(), tools=ALL_TOOLS):
             if event_type == "token":
                 text_content += event_data["text"]
             elif event_type == "_tool_use":
@@ -407,9 +539,11 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
         for tc in tool_calls:
             content_blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
         messages.append({"role": "assistant", "content": content_blocks})
+        _append_to_history("assistant", content_blocks)
 
         if stop_reason == "end_turn" or not tool_calls:
             actions.append({"step": step + 1, "type": "complete", "message": text_content or "Task complete."})
+            _log_episodic_event(task)
             break
 
         # Execute tool calls and add results
@@ -427,6 +561,7 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
             tool_results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": result_str})
 
         messages.append({"role": "user", "content": tool_results})
+        _append_to_history("user", tool_results)
 
     return actions
 
@@ -510,6 +645,82 @@ def convert_to_a2ui(tool_name: str, args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Conversation history helpers
+# ---------------------------------------------------------------------------
+
+def _strip_screenshots(content) -> any:
+    """Strip base64 screenshot data from message content before saving to Firestore."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        cleaned = []
+        for block in content:
+            if isinstance(block, dict):
+                # Strip base64 image data from tool results
+                if block.get("type") == "tool_result":
+                    c = block.get("content", "")
+                    if isinstance(c, str) and len(c) > 10000:
+                        block = {**block, "content": "[large result stripped]"}
+                # Strip screenshot image data
+                if "image" in str(block) and len(str(block)) > 10000:
+                    block = {**block, "content": "[screenshot captured]"} if "content" in block else block
+            cleaned.append(block)
+        return cleaned
+    return content
+
+
+def _append_to_history(role: str, content) -> None:
+    """Append a message to in-memory history and persist to Firestore if available."""
+    global _conversation_history
+    _conversation_history.append({"role": role, "content": content})
+
+    # Trim to max history
+    if len(_conversation_history) > MAX_HISTORY_MESSAGES:
+        _conversation_history = _conversation_history[-MAX_HISTORY_MESSAGES:]
+
+    # Persist to Firestore
+    if _user_uid:
+        try:
+            from src.db.chat_repository import append_message
+            append_message(_user_uid, _chat_session_id, role, _strip_screenshots(content))
+        except Exception as e:
+            print(f"[orchestrator] Failed to save message to Firestore: {e}")
+
+
+def _load_history_from_firestore() -> None:
+    """Load conversation history from Firestore on startup."""
+    global _conversation_history
+    if not _user_uid:
+        return
+    try:
+        from src.db.chat_repository import get_messages
+        messages = get_messages(_user_uid, _chat_session_id)
+        if messages:
+            _conversation_history = messages[-MAX_HISTORY_MESSAGES:]
+            print(f"[orchestrator] Loaded {len(_conversation_history)} messages from Firestore")
+    except Exception as e:
+        print(f"[orchestrator] Could not load chat history: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Episodic memory logging
+# ---------------------------------------------------------------------------
+
+def _log_episodic_event(task: str) -> None:
+    """Log a completed task to episodic memory. Never raises."""
+    try:
+        from utils.episodic_writer import append_event
+        summary = task[:200] if len(task) > 200 else task
+        append_event(
+            summary=summary,
+            category="agent_action",
+            source="orchestrator",
+        )
+    except Exception as exc:
+        print(f"[orchestrator] Failed to log episodic event: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Agent loop — streaming (for POST /chat SSE)
 # ---------------------------------------------------------------------------
 
@@ -520,7 +731,8 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
     """
     yield ("state", {"state": "thinking"})
 
-    messages: list = [{"role": "user", "content": task}]
+    _append_to_history("user", task)
+    messages: list = list(_conversation_history)
 
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
@@ -530,7 +742,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
         tool_calls = []
         buffered_tokens = []
 
-        async for event_type, event_data in call_claude_streaming(messages, SYSTEM_PROMPT, tools=ALL_TOOLS):
+        async for event_type, event_data in call_claude_streaming(messages, build_system_prompt(), tools=ALL_TOOLS):
             if event_type == "token":
                 buffered_tokens.append(event_data)
                 text_content += event_data["text"]
@@ -564,12 +776,14 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
         for tc in tool_calls:
             content_blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
         messages.append({"role": "assistant", "content": content_blocks})
+        _append_to_history("assistant", content_blocks)
 
         # If no tool calls, we're done
         if stop_reason == "end_turn" or not tool_calls:
             yield ("state", {"state": "complete", "message": text_content or "Task complete."})
             async with job_lock:
                 current_job["state"] = "complete"
+            _log_episodic_event(task)
             return
 
         # Execute each tool call
@@ -615,6 +829,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
 
         # Add tool results and loop back for next Claude call
         messages.append({"role": "user", "content": tool_results})
+        _append_to_history("user", tool_results)
         yield ("state", {"state": "thinking"})
         async with job_lock:
             current_job["state"] = "thinking"
@@ -623,6 +838,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
     yield ("state", {"state": "complete", "message": "Reached maximum steps."})
     async with job_lock:
         current_job["state"] = "complete"
+    _log_episodic_event(task)
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +900,7 @@ async def handle_anticipatory_setup(profile: dict) -> list:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Startup / shutdown lifecycle."""
-    global _google_access_token
+    global _google_access_token, _user_uid, _user_name, _chat_session_id
 
     if not ANTHROPIC_API_KEY:
         print("[orchestrator] WARNING: ANTHROPIC_API_KEY not set. Set it: export ANTHROPIC_API_KEY=your_key")
@@ -699,7 +915,11 @@ async def lifespan(application: FastAPI):
         if result:
             _, token_data = result
             _google_access_token = token_data.google_access_token
+            _user_uid = token_data.email
+            _user_name = token_data.name
+            _chat_session_id = uuid.uuid4().hex
             print(f"[orchestrator] Google OAuth loaded for: {token_data.name}")
+            print(f"[orchestrator] Chat session: {_chat_session_id[:8]}... (user: {_user_uid})")
         else:
             print("[orchestrator] No Google auth session found. Productivity tools will need auth first.")
     except Exception as e:
@@ -929,6 +1149,7 @@ async def chat(request: Request):
 @app.post("/reset")
 async def reset():
     """Reset all state for demo transitions."""
+    global _conversation_history, _chat_session_id
     async with job_lock:
         current_job["id"] = None
         current_job["state"] = "idle"
@@ -936,8 +1157,10 @@ async def reset():
         current_job["actions"] = []
         current_job["started_at"] = None
         current_job["message_queue"] = []
-    print("[orchestrator] State reset to idle")
-    return {"status": "ok", "message": "State cleared"}
+    _conversation_history = []
+    _chat_session_id = uuid.uuid4().hex
+    print("[orchestrator] State reset to idle, conversation history cleared")
+    return {"status": "ok", "message": "State and conversation history cleared"}
 
 
 # ---------------------------------------------------------------------------
