@@ -83,8 +83,8 @@ final class ChatViewModel: ObservableObject {
         )
         messages.append(welcome)
 
-        // Connect to persistent /events SSE stream
-        connectToEventsStream()
+        // /events SSE stream connects lazily when orchestrator is confirmed running
+        // (triggered by first successful /chat call or explicit startEventsStream())
 
         // Check voice availability (API key in .env)
         checkVoiceAvailability()
@@ -109,6 +109,9 @@ final class ChatViewModel: ObservableObject {
 
     func sendMessage(text: String) {
         guard !text.isEmpty else { return }
+
+        // Ensure /events stream is connected now that orchestrator is running
+        startEventsStream()
 
         // Add user message
         let userMessage = ChatMessage(
@@ -276,6 +279,15 @@ final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Persistent /events SSE Connection
+
+    private var eventsStreamStarted = false
+
+    /// Start the /events SSE connection. Called after orchestrator is confirmed running.
+    func startEventsStream() {
+        guard !eventsStreamStarted else { return }
+        eventsStreamStarted = true
+        connectToEventsStream()
+    }
 
     private func connectToEventsStream() {
         let url = URL(string: ServerConfig.eventsEndpoint)!
