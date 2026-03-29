@@ -10,6 +10,14 @@ final class ChatViewModel: ObservableObject {
     @Published var twinState: TwinState = .idle
     @Published var isConnected: Bool = false
     @Published var inputText: String = ""
+    @Published var isVNCExpanded: Bool = false
+
+    // Shared MJPEG streamer, owned here so both PiP and expanded views
+    // observe the same stream. Views receive this as @ObservedObject.
+    let mjpegStreamer = MJPEGStreamer()
+
+    // The last tool action name from SSE events, shown in VNC bottom bar
+    @Published var currentToolAction: String = ""
 
     private let orchestratorURL = URL(string: ServerConfig.chatEndpoint)!
     private var sseTask: URLSessionDataTask?
@@ -88,6 +96,9 @@ final class ChatViewModel: ObservableObject {
                let stateStr = json["state"] as? String,
                let newState = TwinState(rawValue: stateStr) {
                 twinState = newState
+                if newState == .complete || newState == .idle {
+                    currentToolAction = ""
+                }
                 if newState == .complete {
                     audioManager.playCompletion()
                     currentTwinMessageID = nil
@@ -170,6 +181,11 @@ final class ChatViewModel: ObservableObject {
 
         let argsRaw = json["args"] as? [String: Any] ?? [:]
         let argsStrings = argsRaw.mapValues { "\($0)" }
+
+        // Update current tool action for VNC bottom bar display
+        currentToolAction = tool.replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "browser ", with: "")
+            .capitalized + "..."
 
         let toolMessage = ChatMessage(
             id: UUID(),
