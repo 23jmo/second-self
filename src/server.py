@@ -172,13 +172,13 @@ async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
     )
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, deprecated=True)
 async def chat(body: ChatRequest):
-    """Chat with the digital twin.
+    """DEPRECATED: Use the orchestrator at port 8420/chat instead.
 
-    Requires a session_id from a previous onboard call.
-    Claude uses the cached profile to understand the user and can
-    execute actions (send emails, create events, etc.) via tool use.
+    The orchestrator now handles all chat with SSE streaming, desktop tools,
+    productivity tools, and generative UI. This endpoint is kept for backward
+    compatibility only.
     """
     profile = _get_cached_profile(body.session_id)
     if not profile:
