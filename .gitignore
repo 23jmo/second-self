@@ -1,6 +1,9 @@
 # Secrets
 .env
 firebase-service-account.json
+.session_store.json
+.profile_cache.json
+.sdk_session_map.json
 
 # Output / cache
 output/
