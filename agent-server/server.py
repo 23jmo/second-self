@@ -163,6 +163,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             })
         elif self.path == "/stream":
             self._stream_screen()
+        elif self.path == "/screenshot":
+            self._serve_screenshot()
         elif self.path == "/view":
             self._serve_viewer()
         else:
@@ -196,6 +198,18 @@ class AgentHandler(BaseHTTPRequestHandler):
                 time.sleep(0.15)
         except (BrokenPipeError, ConnectionResetError):
             print(f"[agent-server] STREAM: disconnected after {frame_count} frames")
+
+    def _serve_screenshot(self):
+        """Return the latest MJPEG frame as a single JPEG image (base64-encoded JSON).
+        Reuses the existing Quartz CG capture buffer, no new capture code."""
+        import base64
+        with _frame_lock:
+            frame = _latest_frame
+        if frame is None:
+            self._respond(503, {"error": "No frame available yet"})
+            return
+        b64 = base64.b64encode(frame).decode("ascii")
+        self._respond(200, {"image": b64, "size": len(frame)})
 
     def _serve_viewer(self):
         """Simple HTML page that shows the live stream."""

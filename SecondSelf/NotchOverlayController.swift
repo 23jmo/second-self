@@ -15,6 +15,7 @@ final class NotchOverlayController: NSObject {
     // Auto-expand / auto-collapse
     private var twinStateCancellable: AnyCancellable?
     private var autoCollapseTask: Task<Void, Never>?
+    private var suggestionCancellable: AnyCancellable?
 
     // Local monitor: clicks ON our panel (expand/collapse)
     // Global monitor: clicks on OTHER apps' windows (dismiss when expanded)
@@ -65,6 +66,7 @@ final class NotchOverlayController: NSObject {
         }
 
         installTwinStateObserver()
+        installSuggestionObserver()
         installLocalClickMonitor()
         installGlobalClickMonitor()
     }
@@ -95,6 +97,9 @@ final class NotchOverlayController: NSObject {
     }
 
     func collapse() {
+        // Cancel any active voice recording before collapsing
+        chatViewModel.cancelVoiceRecording()
+
         // Staged collapse: content fades first (200ms), then notch shape compacts
         chatViewModel.expansionStage = 0
         Task {
@@ -111,6 +116,21 @@ final class NotchOverlayController: NSObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newState in
                 self?.handleTwinStateChange(newState)
+            }
+    }
+
+    /// Auto-expand to full chat when a proactive suggestion arrives while compact.
+    private func installSuggestionObserver() {
+        suggestionCancellable = chatViewModel.$currentSuggestion
+            .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self, self.chatViewModel.expansionStage == 0 else { return }
+                self.chatViewModel.expansionStage = 2
+                Task {
+                    await self.dynamicNotch.expand()
+                    self.isExpanded = true
+                }
             }
     }
 

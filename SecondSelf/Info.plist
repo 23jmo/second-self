@@ -43,5 +43,9 @@
     <!-- Accessibility description for global hotkey monitoring -->
     <key>NSAppleEventsUsageDescription</key>
     <string>Second Self needs accessibility access to register global keyboard shortcuts.</string>
+
+    <!-- Microphone access for voice input (hold-to-talk STT) -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Second Self uses your microphone for voice input to chat with your Twin.</string>
 </dict>
 </plist>
