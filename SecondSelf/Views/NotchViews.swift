@@ -182,16 +182,39 @@ struct ExpandedNotchContent: View {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // VNC PiP: fills all remaining space, never hides once shown
+            // VNC PiP: shows on computer-use tool calls, fills remaining space
             if chatViewModel.showVNCFeed {
-                ZStack(alignment: .bottomTrailing) {
+                ZStack {
                     VNCPipView(twinState: chatViewModel.twinState)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Twin character overlapping bottom-right corner
-                    TwinCharacterView(twinState: chatViewModel.twinState)
-                        .frame(width: 72, height: 99)
-                        .offset(x: 4, y: 10)
+                    // Dismiss button — top right
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button(action: { chatViewModel.dismissVNCFeed() }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .padding(5)
+                                    .background(Circle().fill(Color.black.opacity(0.5)))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(6)
+                        }
+                        Spacer()
+                    }
+
+                    // Twin character — bottom right
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            TwinCharacterView(twinState: chatViewModel.twinState)
+                                .frame(width: 72, height: 99)
+                                .offset(x: 4, y: 10)
+                        }
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 4)

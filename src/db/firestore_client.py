@@ -28,6 +28,10 @@ def _ensure_firebase_initialized() -> bool:
 
     try:
         sa_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+        if sa_path and not os.path.isabs(sa_path):
+            # Resolve relative to the repo root (where .env lives)
+            repo_root = os.path.join(os.path.dirname(__file__), "..", "..")
+            sa_path = os.path.join(repo_root, sa_path)
         if sa_path and os.path.exists(sa_path):
             cred = firebase_creds.Certificate(sa_path)
             firebase_admin.initialize_app(cred)

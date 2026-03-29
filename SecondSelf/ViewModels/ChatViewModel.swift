@@ -10,7 +10,7 @@ final class ChatViewModel: ObservableObject {
     @Published var twinState: TwinState = .idle
     @Published var isConnected: Bool = false
     @Published var inputText: String = ""
-    /// VNC feed stays visible once the agent starts working, until user dismisses.
+    /// VNC feed shows when agent uses computer tools, user can dismiss with X.
     @Published var showVNCFeed: Bool = false
 
     // The last tool action name from SSE events, shown in VNC bottom bar
@@ -55,8 +55,12 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - VNC Feed
 
+    /// User dismissed VNC manually — stays hidden until next computer-use tool call.
+    private var userDismissedVNC = false
+
     func dismissVNCFeed() {
         showVNCFeed = false
+        userDismissedVNC = true
     }
 
     // MARK: - Send Message
@@ -108,9 +112,6 @@ final class ChatViewModel: ObservableObject {
                let stateStr = json["state"] as? String,
                let newState = TwinState(rawValue: stateStr) {
                 twinState = newState
-                if newState == .working {
-                    showVNCFeed = true
-                }
                 if newState == .complete || newState == .idle {
                     currentToolAction = ""
                 }
@@ -202,6 +203,14 @@ final class ChatViewModel: ObservableObject {
 
         let argsRaw = json["args"] as? [String: Any] ?? [:]
         let argsStrings = argsRaw.mapValues { "\($0)" }
+
+        // Show VNC when agent uses computer-use tools (browser or desktop)
+        let isComputerUse = tool.hasPrefix("browser_")
+            || ["open_app", "type_text", "hotkey", "click", "screenshot", "scroll"].contains(tool)
+        if isComputerUse && !showVNCFeed {
+            userDismissedVNC = false
+            showVNCFeed = true
+        }
 
         // Update current tool action for VNC bottom bar display
         currentToolAction = tool.replacingOccurrences(of: "_", with: " ")
