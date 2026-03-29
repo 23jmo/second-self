@@ -63,12 +63,15 @@
     const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
 
-    // Google provider with Gmail + Calendar scopes
+    // Google provider with Gmail, Calendar, Docs, Slides, Drive scopes
     const provider = new GoogleAuthProvider();
     provider.addScope("https://www.googleapis.com/auth/gmail.readonly");
     provider.addScope("https://www.googleapis.com/auth/gmail.send");
     provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
     provider.addScope("https://www.googleapis.com/auth/calendar.events");
+    provider.addScope("https://www.googleapis.com/auth/documents");
+    provider.addScope("https://www.googleapis.com/auth/presentations");
+    provider.addScope("https://www.googleapis.com/auth/drive.file");
 
     window.signIn = async function () {
       const btn = document.getElementById("signin-btn");

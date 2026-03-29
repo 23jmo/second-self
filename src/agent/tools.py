@@ -5,7 +5,8 @@ is captured per-request without globals or thread-locals.
 
 Tools: send_email, reply_to_email, read_emails, draft_email,
 get_contact_info, summarize_emails, create_event, update_event,
-delete_event, list_events, search_web.
+delete_event, list_events, create_document, create_presentation,
+share_document, search_web.
 """
 
 import asyncio
@@ -30,6 +31,21 @@ def _build_gmail_service(access_token: str):
 def _build_calendar_service(access_token: str):
     creds = Credentials(token=access_token)
     return build("calendar", "v3", credentials=creds)
+
+
+def _build_docs_service(access_token: str):
+    creds = Credentials(token=access_token)
+    return build("docs", "v1", credentials=creds)
+
+
+def _build_slides_service(access_token: str):
+    creds = Credentials(token=access_token)
+    return build("slides", "v1", credentials=creds)
+
+
+def _build_drive_service(access_token: str):
+    creds = Credentials(token=access_token)
+    return build("drive", "v3", credentials=creds)
 
 
 # --- Email implementation functions ---
@@ -269,6 +285,123 @@ async def _list_events(access_token: str, days_ahead: int = 7, query: str = "") 
     return await asyncio.to_thread(_list)
 
 
+# --- Google Docs implementation functions ---
+
+async def _create_document(access_token: str, title: str, body_text: str = "") -> dict:
+    def _create():
+        docs = _build_docs_service(access_token)
+        doc = docs.documents().create(body={"title": title}).execute()
+        doc_id = doc["documentId"]
+
+        if body_text:
+            docs.documents().batchUpdate(
+                documentId=doc_id,
+                body={
+                    "requests": [{
+                        "insertText": {
+                            "location": {"index": 1},
+                            "text": body_text,
+                        }
+                    }]
+                },
+            ).execute()
+
+        return {
+            "document_id": doc_id,
+            "title": title,
+            "url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        }
+    return await asyncio.to_thread(_create)
+
+
+async def _create_presentation(
+    access_token: str, title: str, slides: list[dict] | None = None,
+) -> dict:
+    """Create a Google Slides presentation.
+
+    slides: optional list of dicts with 'title' and 'body' keys for each slide.
+    """
+    def _create():
+        svc = _build_slides_service(access_token)
+        pres = svc.presentations().create(body={"title": title}).execute()
+        pres_id = pres["presentationId"]
+
+        if slides:
+            requests = []
+            for i, slide_data in enumerate(slides):
+                # Create a new blank slide (the first slide already exists)
+                if i > 0:
+                    requests.append({"createSlide": {"insertionIndex": i}})
+
+            if requests:
+                svc.presentations().batchUpdate(
+                    presentationId=pres_id, body={"requests": requests}
+                ).execute()
+
+            # Re-fetch to get slide IDs
+            pres = svc.presentations().get(presentationId=pres_id).execute()
+            page_ids = [s["objectId"] for s in pres.get("slides", [])]
+
+            text_requests = []
+            for i, slide_data in enumerate(slides):
+                if i >= len(page_ids):
+                    break
+                page_id = page_ids[i]
+                # Find the title and body placeholders on each slide
+                slide_obj = pres["slides"][i]
+                for element in slide_obj.get("pageElements", []):
+                    shape = element.get("shape", {})
+                    ph = shape.get("placeholder", {})
+                    ph_type = ph.get("type", "")
+                    obj_id = element["objectId"]
+                    if ph_type in ("TITLE", "CENTERED_TITLE") and slide_data.get("title"):
+                        text_requests.append({
+                            "insertText": {
+                                "objectId": obj_id,
+                                "text": slide_data["title"],
+                                "insertionIndex": 0,
+                            }
+                        })
+                    elif ph_type in ("BODY", "SUBTITLE") and slide_data.get("body"):
+                        text_requests.append({
+                            "insertText": {
+                                "objectId": obj_id,
+                                "text": slide_data["body"],
+                                "insertionIndex": 0,
+                            }
+                        })
+
+            if text_requests:
+                svc.presentations().batchUpdate(
+                    presentationId=pres_id, body={"requests": text_requests}
+                ).execute()
+
+        return {
+            "presentation_id": pres_id,
+            "title": title,
+            "url": f"https://docs.google.com/presentation/d/{pres_id}/edit",
+            "slide_count": len(slides) if slides else 1,
+        }
+    return await asyncio.to_thread(_create)
+
+
+async def _share_document(
+    access_token: str, file_id: str, email: str,
+    role: str = "writer", notify: bool = True,
+) -> str:
+    def _share():
+        drive = _build_drive_service(access_token)
+        drive.permissions().create(
+            fileId=file_id,
+            body={"type": "user", "role": role, "emailAddress": email},
+            sendNotificationEmail=notify,
+        ).execute()
+        # Get the file name for confirmation
+        file_meta = drive.files().get(fileId=file_id, fields="name,webViewLink").execute()
+        return f"Shared '{file_meta.get('name', file_id)}' with {email} as {role}. Link: {file_meta.get('webViewLink', '')}"
+    return await asyncio.to_thread(_share)
+
+
 # --- Tool server factory ---
 
 def create_tools_server(access_token: str | None):
@@ -505,6 +638,102 @@ def create_tools_server(access_token: str | None):
         )
         return {"content": [{"type": "text", "text": result}]}
 
+    # --- Google Docs / Slides / Drive tools ---
+
+    @tool(
+        "create_document",
+        "Create a new Google Doc. Optionally include initial body text. "
+        "Returns the document URL for sharing.",
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Document title"},
+                "body_text": {
+                    "type": "string",
+                    "description": "Initial document body content (plain text). Leave empty to create a blank doc.",
+                },
+            },
+            "required": ["title"],
+        },
+    )
+    async def create_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+        token = _require_token()
+        result = await _create_document(token, args["title"], body_text=args.get("body_text", ""))
+        text = (
+            f"Created Google Doc: '{result['title']}'\n"
+            f"Document ID: {result['document_id']}\n"
+            f"URL: {result['url']}"
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
+        "create_presentation",
+        "Create a new Google Slides presentation. Optionally provide slide content as a list "
+        "of objects with 'title' and 'body' fields. Returns the presentation URL.",
+        {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Presentation title"},
+                "slides": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Slide title"},
+                            "body": {"type": "string", "description": "Slide body/content text"},
+                        },
+                    },
+                    "description": "List of slides with title and body content",
+                },
+            },
+            "required": ["title"],
+        },
+    )
+    async def create_presentation_tool(args: dict[str, Any]) -> dict[str, Any]:
+        token = _require_token()
+        result = await _create_presentation(token, args["title"], slides=args.get("slides"))
+        text = (
+            f"Created Google Slides: '{result['title']}'\n"
+            f"Presentation ID: {result['presentation_id']}\n"
+            f"Slides: {result['slide_count']}\n"
+            f"URL: {result['url']}"
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
+        "share_document",
+        "Share a Google Doc, Slides, or any Drive file with someone by email. "
+        "Use create_document or create_presentation first to get the file ID, "
+        "or use get_contact_info to look up the recipient's email.",
+        {
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "Google Drive file ID (document_id or presentation_id from create tools)",
+                },
+                "email": {"type": "string", "description": "Recipient's email address"},
+                "role": {
+                    "type": "string",
+                    "enum": ["reader", "commenter", "writer"],
+                    "description": "Permission level (default: writer)",
+                },
+                "notify": {
+                    "type": "boolean",
+                    "description": "Send email notification to the recipient (default: true)",
+                },
+            },
+            "required": ["file_id", "email"],
+        },
+    )
+    async def share_document_tool(args: dict[str, Any]) -> dict[str, Any]:
+        token = _require_token()
+        result = await _share_document(
+            token, args["file_id"], args["email"],
+            role=args.get("role", "writer"), notify=args.get("notify", True),
+        )
+        return {"content": [{"type": "text", "text": result}]}
+
     # --- Web search ---
 
     @tool(
@@ -534,6 +763,9 @@ def create_tools_server(access_token: str | None):
             update_event_tool,
             delete_event_tool,
             list_events_tool,
+            create_document_tool,
+            create_presentation_tool,
+            share_document_tool,
             search_web_tool,
         ],
     )

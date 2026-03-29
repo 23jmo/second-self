@@ -68,6 +68,12 @@ def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
         return f"Deleted event {tool_input.get('event_id', '')[:12]}"
     elif tool_name == "list_events":
         return f"Listed events ({tool_input.get('days_ahead', 7)} days ahead)"
+    elif tool_name == "create_document":
+        return f"Created Google Doc: '{tool_input.get('title')}'"
+    elif tool_name == "create_presentation":
+        return f"Created Google Slides: '{tool_input.get('title')}'"
+    elif tool_name == "share_document":
+        return f"Shared file with {tool_input.get('email')} as {tool_input.get('role', 'writer')}"
     elif tool_name == "search_web":
         return f"Web search: {tool_input.get('query')}"
     return str(tool_input)[:200]
@@ -111,6 +117,8 @@ INSTRUCTIONS:
 - When the user mentions someone by name without providing their email, use get_contact_info to look up their email address.
 - When asked to "catch up" on emails or for an inbox summary, use summarize_emails.
 - If you need more context (e.g. to find someone's email address), use read_emails or search_web first.
+- When asked to create a document, use create_document. When asked to create a presentation or slides, use create_presentation. Include the shareable URL in your response.
+- When asked to share a document or presentation, use share_document with the file ID returned by create_document/create_presentation.
 - After completing an action, briefly confirm what you did.
 - You have full conversation history. Reference earlier messages when relevant — don't re-ask for information the user already provided."""
 
@@ -127,6 +135,9 @@ _ALL_TOOL_NAMES = [
     "mcp__second_self__update_event",
     "mcp__second_self__delete_event",
     "mcp__second_self__list_events",
+    "mcp__second_self__create_document",
+    "mcp__second_self__create_presentation",
+    "mcp__second_self__share_document",
     "mcp__second_self__search_web",
 ]
 
