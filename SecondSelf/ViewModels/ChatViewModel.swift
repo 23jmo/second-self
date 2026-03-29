@@ -163,7 +163,6 @@ final class ChatViewModel: ObservableObject {
             timestamp: Date()
         )
         messages.append(userMessage)
-        inputText = ""
 
         // Update state
         twinState = .thinking

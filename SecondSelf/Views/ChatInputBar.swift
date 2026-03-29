@@ -18,6 +18,7 @@ struct ChatInputBar: View {
     let onPermissionTap: () -> Void
 
     @FocusState private var isFocused: Bool
+    @State private var textFieldID = UUID()
 
     var body: some View {
         VStack(spacing: 6) {
@@ -63,6 +64,7 @@ struct ChatInputBar: View {
                     .font(.system(size: 13))
                     .foregroundColor(Color.ssTextPrimary)
                     .focused($isFocused)
+                    .id(textFieldID)
                     .onSubmit { sendIfValid() }
                     .disabled(!isEnabled)
                     .transition(.opacity)
@@ -154,10 +156,12 @@ struct ChatInputBar: View {
     private func sendIfValid() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty && isEnabled else { return }
-        // Clear synchronously BEFORE onSend to ensure TextField sees the update
         text = ""
+        textFieldID = UUID()  // Force TextField recreation to bypass field editor cache
         onSend(trimmed)
-        isFocused = true
+        DispatchQueue.main.async {
+            isFocused = true
+        }
     }
 }
 
