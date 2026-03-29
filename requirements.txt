@@ -6,7 +6,9 @@ google-auth-oauthlib
 google-auth-httplib2
 requests
 httpx
-PyJWT
+PyJWT>=2.4.0
+cryptography>=41.0.0
+firebase-admin>=6.0.0
 anthropic
 claude-agent-sdk
 python-dotenv
@@ -14,3 +16,7 @@ pydantic
 beautifulsoup4
 tavily-python
 filelock
+verifiers
+datasets
+transformers>=4.40.0
+torch>=2.0.0

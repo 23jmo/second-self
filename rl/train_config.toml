@@ -1,0 +1,18 @@
+# prime-rl training config for the habit suggestion classifier
+#
+# Train a small model to predict accept/dismiss outcomes for suggestions.
+# Run: prime train run rl/train_config.toml
+
+model = "Qwen/Qwen3-0.6B"
+
+max_steps = 200
+batch_size = 32
+rollouts_per_example = 4
+
+[sampling]
+max_tokens = 128        # predictions are short JSON, no need for long output
+temperature = 0.7       # enough diversity across rollouts
+
+[[env]]
+id = "rl.habit_env"
+dataset_path = "rl/data/signals.jsonl"

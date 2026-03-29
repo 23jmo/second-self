@@ -136,7 +136,11 @@ def get_latest_session() -> tuple[str, TokenData] | None:
 
 
 def get_uid_for_session(session_id: str) -> str:
-    """Get the Firebase UID associated with a session."""
+    """Get the Firebase UID associated with a session.
+
+    # TODO: callers with a raw Auth0 JWT should prefer
+    # utils.auth_bridge.get_user_id() for cryptographic verification.
+    """
     token_data = get_session(session_id)
     if token_data and token_data.uid:
         return token_data.uid

@@ -155,6 +155,8 @@ async def auth_native_callback(
 
     # Decode the id_token without verification — we just received it from
     # Auth0 over HTTPS in a server-to-server exchange, so it's trustworthy.
+    # TODO: replace with utils.auth_bridge.verify_auth0_token() for
+    #       client-facing token verification paths.
     try:
         claims = jwt.decode(id_token_raw, options={"verify_signature": False})
     except jwt.DecodeError:
