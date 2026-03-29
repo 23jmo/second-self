@@ -2,27 +2,69 @@
 
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 import MascotFace from "@/components/mascot/MascotFace";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import { getFirebaseConfig, postAuthCallback } from "@/lib/api";
 
 interface NameInputScreenProps {
   onSubmit: (name: string, role: string) => void;
+  onSession: (sessionId: string, email: string) => void;
 }
 
 type FocusedField = "name" | "role" | null;
 
-export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
+export default function NameInputScreen({ onSubmit, onSession }: NameInputScreenProps) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [focused, setFocused] = useState<FocusedField>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const isValid = name.trim().length > 0 && role.trim().length > 0;
   const nameTagVisible = name.trim().length > 0;
 
-  const handleSubmit = () => {
-    if (isValid) {
+  const handleSubmit = async () => {
+    if (!isValid || loading) return;
+    setLoading(true);
+    setError("");
+
+    try {
+      // 1. Get Firebase config from backend
+      const config = await getFirebaseConfig();
+      const app = initializeApp(config);
+      const auth = getAuth(app);
+
+      // 2. Google sign-in popup with required scopes
+      const provider = new GoogleAuthProvider();
+      provider.addScope("https://www.googleapis.com/auth/gmail.readonly");
+      provider.addScope("https://www.googleapis.com/auth/gmail.send");
+      provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
+      provider.addScope("https://www.googleapis.com/auth/calendar.events");
+      provider.addScope("https://www.googleapis.com/auth/documents");
+      provider.addScope("https://www.googleapis.com/auth/presentations");
+      provider.addScope("https://www.googleapis.com/auth/drive.file");
+
+      const result = await signInWithPopup(auth, provider);
+
+      // 3. Extract tokens
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const googleAccessToken = credential?.accessToken ?? "";
+      const idToken = await result.user.getIdToken();
+      const email = result.user.email ?? "";
+
+      // 4. Send to backend to create session
+      const resp = await postAuthCallback(idToken, googleAccessToken, email, name.trim());
+      onSession(resp.session_id, email);
+
+      // 5. Advance wizard
       onSubmit(name.trim(), role.trim());
+    } catch (err) {
+      console.error("Auth failed:", err);
+      setError(err instanceof Error ? err.message : "Sign-in failed. Try again.");
+      setLoading(false);
     }
   };
 
@@ -31,30 +73,25 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
   };
 
   // --- Eye direction state machine ---
-  // Priority: typing > name tag > mouse (undefined = mouse fallback)
   let lookX: number | undefined;
   let lookY: number | undefined;
 
   if (focused === "name") {
-    // Reading the name input — sweep left to right
     const progress = Math.min(name.length / 20, 1);
     lookX = -0.6 + progress * 1.2;
     lookY = 0.5;
   } else if (focused === "role") {
-    // Reading the role input — further down
     const progress = Math.min(role.length / 25, 1);
     lookX = -0.6 + progress * 1.2;
     lookY = 0.8;
   } else if (nameTagVisible) {
-    // Not typing, but name tag is floating above — look way up at it
     lookX = 0;
     lookY = -1;
   }
-  // else: undefined → MascotFace falls back to mouse tracking
 
   return (
     <div className="flex flex-col items-center w-full max-w-[615px] px-4" onKeyDown={handleKeyDown}>
-      {/* Name tag above mascot — floats in when name has content */}
+      {/* Name tag above mascot */}
       <div className="h-10 sm:h-12 flex items-end justify-center">
         <AnimatePresence>
           {nameTagVisible && (
@@ -82,11 +119,7 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
           WebkitMaskImage: "linear-gradient(to bottom, black 30%, black 55%, transparent 90%)",
         }}
       >
-        <MascotFace
-          className="w-full"
-          lookX={lookX}
-          lookY={lookY}
-        />
+        <MascotFace className="w-full" lookX={lookX} lookY={lookY} />
       </div>
 
       {/* Content */}
@@ -120,8 +153,12 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
           </div>
         </div>
 
-        <Button onClick={handleSubmit} disabled={!isValid}>
-          that&apos;s me
+        {error && (
+          <p className="text-red-500 text-sm text-center">{error}</p>
+        )}
+
+        <Button onClick={handleSubmit} disabled={!isValid || loading}>
+          {loading ? "signing in..." : "that\u0027s me"}
         </Button>
       </div>
     </div>

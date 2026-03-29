@@ -1,12 +1,12 @@
 import MascotFullBodyLookUp from "@/components/mascot/MascotFullBodyLookUp";
 import Button from "@/components/ui/Button";
-import DownloadIcon from "@/components/ui/DownloadIcon";
 
 interface CompleteScreenProps {
   name: string;
+  onNext: () => void;
 }
 
-export default function CompleteScreen({ name }: CompleteScreenProps) {
+export default function CompleteScreen({ name, onNext }: CompleteScreenProps) {
   return (
     <div className="flex flex-col items-center gap-4 w-full max-w-[615px] px-4">
       {/* Name tag */}
@@ -26,15 +26,15 @@ export default function CompleteScreen({ name }: CompleteScreenProps) {
           <span className="font-semibold text-primary">twin</span>
         </h1>
         <p className="text-base sm:text-lg lg:text-2xl font-normal text-black text-center mt-1">
-          your second self lives in the notch.
+          your second self is ready to go.
           <br />
-          tap it anytime to give a command.
+          start chatting to put it to work.
         </p>
       </div>
 
-      <a href="#" className="mt-2">
-        <Button showArrow={false} variant="primary" icon={<DownloadIcon className="w-5 h-5 md:w-6 md:h-6" />}>download second self</Button>
-      </a>
+      <div className="mt-2">
+        <Button onClick={onNext}>start chatting</Button>
+      </div>
     </div>
   );
 }
