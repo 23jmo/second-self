@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hide dock icon: this is a background utility app -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <key>CFBundleName</key>
+    <string>Second Self</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Second Self</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>com.secondself.app</string>
+
+    <key>CFBundleVersion</key>
+    <string>1</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleExecutable</key>
+    <string>SecondSelf</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Network access for SSE to orchestrator and VNC stream -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+
+    <!-- Accessibility description for global hotkey monitoring -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Second Self needs accessibility access to register global keyboard shortcuts.</string>
+</dict>
+</plist>
