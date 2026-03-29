@@ -63,7 +63,7 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
         errorMessage = nil
 
         // The FastAPI server at :8000 redirects to Auth0 for Google sign-in
-        guard let authURL = URL(string: "http://localhost:8000/auth/login") else {
+        guard let authURL = URL(string: "http://localhost:8000/auth/google-login") else {
             errorMessage = "Invalid auth URL"
             isAuthenticating = false
             return
@@ -160,6 +160,22 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
             authSession?.cancel()
             authSession = nil
             onAuthenticated?()
+            notifyOrchestratorOfAuth()
         }
+    }
+
+    /// Tell the orchestrator to reload Google OAuth token after sign-in.
+    private func notifyOrchestratorOfAuth() {
+        guard let url = URL(string: "\(ServerConfig.orchestratorURL)/auth/refresh") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 3
+        URLSession.shared.dataTask(with: request) { _, _, error in
+            if let error = error {
+                print("[GoogleAuth] Could not notify orchestrator: \(error.localizedDescription)")
+            } else {
+                print("[GoogleAuth] Orchestrator token refreshed")
+            }
+        }.resume()
     }
 }

@@ -97,9 +97,13 @@ final class NotchOverlayController: NSObject {
                 await dynamicNotch.expand()
                 isExpanded = true
             }
+            // Slide in the dangling mascot at the right edge
+            setPeepingVisible(true, position: .rightEdge)
         case 1:
             // Status mini → full chat: already expanded, just swap content
             chatViewModel.expansionStage = 2
+            // Hide dangling mascot when entering full chat
+            setPeepingVisible(false)
             // Make the panel key so the text field can receive keyboard focus
             makeNotchPanelKey()
         default:
@@ -114,6 +118,9 @@ final class NotchOverlayController: NSObject {
 
         // Hide floating VNC window when collapsing
         setVNCWindowVisible(false)
+
+        // Hide dangling mascot
+        setPeepingVisible(false)
 
         // Staged collapse: content fades first (200ms), then notch shape compacts
         chatViewModel.expansionStage = 0
@@ -160,6 +167,7 @@ final class NotchOverlayController: NSObject {
                     await dynamicNotch.expand()
                     isExpanded = true
                 }
+                setPeepingVisible(true, position: .rightEdge)
             }
 
         case .complete:
@@ -288,14 +296,14 @@ final class NotchOverlayController: NSObject {
 
     // MARK: - Peeping Mascot
 
-    private let mascotHeight: CGFloat = 70
+    private let mascotWidth: CGFloat = 50
+    private let mascotHeight: CGFloat = 72
 
     private func setupPeepingWindow() {
         guard let screen = NSScreen.main else { return }
         let notchFrame = Self.screenNotchFrame(screen)
-        let mascotWidth: CGFloat = 80
 
-        // Start hidden above the notch bottom edge
+        // Start hidden behind the notch bottom edge
         let windowFrame = NSRect(
             x: notchFrame.midX - mascotWidth / 2,
             y: notchFrame.minY,
@@ -312,12 +320,12 @@ final class NotchOverlayController: NSObject {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.level = .statusBar - 1  // Behind the notch panel
+        window.level = .statusBar + 1  // In front of the notch panel
         window.ignoresMouseEvents = true
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
 
         let hostingView = NSHostingView(
-            rootView: PeepingMascot(barHeight: 0, isVisible: true)
+            rootView: DanglingMascotView()
                 .frame(width: mascotWidth, height: mascotHeight)
         )
         hostingView.layer?.backgroundColor = .clear
@@ -332,7 +340,8 @@ final class NotchOverlayController: NSObject {
             matching: [.mouseMoved]
         ) { [weak self] event in
             guard let self = self, self.chatViewModel.expansionStage == 0 else {
-                if self?.peepingVisible == true {
+                // Don't dismiss if stage 1 — the mascot is intentionally shown there
+                if self?.peepingVisible == true && self?.chatViewModel.expansionStage != 1 {
                     self?.setPeepingVisible(false)
                 }
                 return
@@ -342,7 +351,7 @@ final class NotchOverlayController: NSObject {
             let isInNotchArea = notchRect.contains(mouseLocation)
 
             if isInNotchArea && !self.peepingVisible {
-                self.setPeepingVisible(true)
+                self.setPeepingVisible(true, position: .center)
             } else if !isInNotchArea && self.peepingVisible {
                 self.setPeepingVisible(false)
             }
@@ -351,7 +360,7 @@ final class NotchOverlayController: NSObject {
         // Also track local mouse moved (when our app is active)
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             guard let self = self, self.chatViewModel.expansionStage == 0 else {
-                if self?.peepingVisible == true {
+                if self?.peepingVisible == true && self?.chatViewModel.expansionStage != 1 {
                     self?.setPeepingVisible(false)
                 }
                 return event
@@ -361,7 +370,7 @@ final class NotchOverlayController: NSObject {
             let isInNotchArea = notchRect.contains(mouseLocation)
 
             if isInNotchArea && !self.peepingVisible {
-                self.setPeepingVisible(true)
+                self.setPeepingVisible(true, position: .center)
             } else if !isInNotchArea && self.peepingVisible {
                 self.setPeepingVisible(false)
             }
@@ -369,39 +378,55 @@ final class NotchOverlayController: NSObject {
         }
     }
 
-    private func setPeepingVisible(_ visible: Bool) {
+    /// Where to position the dangling mascot relative to the notch.
+    private enum PeepPosition {
+        case center     // For compact hover
+        case rightEdge  // For medium notch (stage 1)
+    }
+
+    private func setPeepingVisible(_ visible: Bool, position: PeepPosition = .center) {
         peepingVisible = visible
-        guard let window = peepingWindow, let screen = NSScreen.main else { return }
-
-        let notchFrame = Self.screenNotchFrame(screen)
-        let mascotWidth: CGFloat = 80
-
-        // Hidden: tucked up behind notch. Visible: peek just the arms + top of head.
-        let hiddenY = notchFrame.minY
-        let visibleY = notchFrame.minY - 30  // Only peek ~30pt below notch edge
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.35
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().alphaValue = visible ? 1.0 : 0.0
-            window.animator().setFrame(
-                NSRect(
-                    x: notchFrame.midX - mascotWidth / 2,
-                    y: visible ? visibleY : hiddenY,
-                    width: mascotWidth,
-                    height: mascotHeight
-                ),
-                display: true
-            )
+        guard let window = peepingWindow, let screen = NSScreen.main else {
+            print("[PEEP] ❌ guard failed: window=\(peepingWindow != nil) screen=\(NSScreen.main != nil)")
+            return
         }
 
-        // Also nudge the DynamicNotchKit compact size on hover
-        // (DynamicNotchKit doesn't expose a direct resize API, so we skip this for now)
+        let notchFrame = Self.screenNotchFrame(screen)
+
+        // Both positions use the notch frame as anchor (no panel frame reading)
+        let xPosition: CGFloat
+        switch position {
+        case .center:
+            xPosition = notchFrame.midX - mascotWidth / 2
+        case .rightEdge:
+            // Right side of the medium notch bar (360pt wide, centered on notch)
+            xPosition = notchFrame.midX + 180 - mascotWidth + 5
+        }
+
+        // The notch bar's bottom edge in screen coordinates.
+        // The mascot hangs just below this edge, sliding in from behind.
+        let barBottom = notchFrame.minY
+        let visibleY = barBottom - mascotHeight + 8  // overlap 8pt so arms appear to grip the edge
+        let hiddenY = barBottom  // tucked behind the bar
+
+        let targetY = visible ? visibleY : hiddenY
+        print("[PEEP] visible=\(visible) pos=\(position) notch=\(notchFrame) barBottom=\(barBottom) targetY=\(targetY) x=\(xPosition) windowLevel=\(window.level.rawValue)")
+
+        window.animator().alphaValue = visible ? 1.0 : 0.0
+        window.animator().setFrame(
+            NSRect(
+                x: xPosition,
+                y: targetY,
+                width: mascotWidth,
+                height: mascotHeight
+            ),
+            display: true
+        )
     }
 
     // MARK: - Floating VNC Window
 
-    private let vncWidth: CGFloat = 458
+    private let vncWidth: CGFloat = 448
     private let vncHeight: CGFloat = 308
 
     /// Read the actual bottom edge of the DynamicNotchKit panel window.
@@ -465,7 +490,7 @@ final class NotchOverlayController: NSObject {
 
         // Read the live panel bottom edge; overlap by 6pt so the seam disappears
         let panelBottom = notchPanelBottomY()
-        let overlap: CGFloat = 8
+        let overlap: CGFloat = 13
         let visibleY = panelBottom - vncHeight + overlap
         let hiddenY = panelBottom
 

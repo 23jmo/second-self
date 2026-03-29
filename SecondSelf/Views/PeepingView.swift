@@ -18,6 +18,10 @@ struct PeepingMascot: View {
     private let creamColor = Color(red: 0xFB / 255.0, green: 0xFF / 255.0, blue: 0xD4 / 255.0)
     private let oliveColor = Color(red: 0x9C / 255.0, green: 0xA1 / 255.0, blue: 0x61 / 255.0)
 
+    // Face animation state
+    @State private var blinkScale: CGFloat = 1.0
+    @State private var swingAngle: Double = 0
+
     /// Total height below the bar that the mascot occupies when fully visible
     static let hangHeight: CGFloat = 58
 
@@ -27,10 +31,17 @@ struct PeepingMascot: View {
                 .frame(height: barHeight)
 
             mascotBody
+                .rotationEffect(.degrees(swingAngle), anchor: .top)
                 .offset(y: isVisible ? 0 : -travel)
                 .animation(.spring(response: 0.5, dampingFraction: 0.75), value: isVisible)
         }
         .allowsHitTesting(false)
+        .onAppear { startFaceAnimations() }
+        .onChange(of: isVisible) { visible in
+            if visible {
+                startFaceAnimations()
+            }
+        }
     }
 
     private var mascotBody: some View {
@@ -66,12 +77,12 @@ struct PeepingMascot: View {
 
     private var face: some View {
         ZStack {
-            // Eyes
+            // Eyes (blink by squashing vertically)
             HStack(spacing: eyeSpacing) {
-                Circle().fill(oliveColor)
-                    .frame(width: eyeRadius * 2, height: eyeRadius * 2)
-                Circle().fill(oliveColor)
-                    .frame(width: eyeRadius * 2, height: eyeRadius * 2)
+                Ellipse().fill(oliveColor)
+                    .frame(width: eyeRadius * 2, height: eyeRadius * 2 * blinkScale)
+                Ellipse().fill(oliveColor)
+                    .frame(width: eyeRadius * 2, height: eyeRadius * 2 * blinkScale)
             }
             .offset(y: -headRadius * 0.1)
 
@@ -96,6 +107,38 @@ struct PeepingMascot: View {
             endPoint: .bottom
         )
     }
+
+    // MARK: - Face Animations
+
+    private func startFaceAnimations() {
+        // Gentle pendulum swing
+        withAnimation(
+            .easeInOut(duration: 2.0)
+            .repeatForever(autoreverses: true)
+        ) {
+            swingAngle = 3.0
+        }
+
+        // Periodic blink loop
+        Task { @MainActor in
+            while !Task.isCancelled {
+                // Wait 2–5 seconds between blinks
+                let delay = Double.random(in: 2.0...5.0)
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { break }
+
+                // Close eyes
+                withAnimation(.easeIn(duration: 0.08)) {
+                    blinkScale = 0.1
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+                // Open eyes
+                withAnimation(.easeOut(duration: 0.12)) {
+                    blinkScale = 1.0
+                }
+            }
+        }
+    }
 }
 
 private struct TriangleNose: Shape {
@@ -119,5 +162,38 @@ private struct MouthShape: Shape {
             control: CGPoint(x: rect.midX, y: rect.maxY)
         )
         return path
+    }
+}
+
+// MARK: - Dangling Mascot (Pose #2 asset)
+
+/// Uses the TwinPose2 image asset (arms raised, as if gripping the notch edge).
+/// Subtle swing + breathing animation to feel alive.
+struct DanglingMascotView: View {
+    @State private var swingAngle: Double = 0
+    @State private var breatheScale: CGFloat = 1.0
+
+    var body: some View {
+        Image("TwinPose2")
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .scaleEffect(breatheScale)
+            .rotationEffect(.degrees(swingAngle), anchor: .top)
+            .onAppear {
+                // Gentle pendulum swing from the top anchor
+                withAnimation(
+                    .easeInOut(duration: 2.5)
+                    .repeatForever(autoreverses: true)
+                ) {
+                    swingAngle = 2.5
+                }
+                // Subtle breathing
+                withAnimation(
+                    .easeInOut(duration: 1.8)
+                    .repeatForever(autoreverses: true)
+                ) {
+                    breatheScale = 1.02
+                }
+            }
     }
 }
