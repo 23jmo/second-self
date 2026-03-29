@@ -9,3 +9,10 @@ __pycache__/
 *.xcuserstate
 xcuserdata/
 DerivedData/
+
+# Next.js
+.next/
+out/
+node_modules/
+npm-debug.log*
+.vercel
