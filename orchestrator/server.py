@@ -627,7 +627,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
 
 async def handle_profile(name: str) -> dict:
     """Profile a person using Tavily web search + Claude summarization."""
-    results = call_tavily(f"{name} professional background work")
+    results = await asyncio.to_thread(call_tavily, f"{name} professional background work")
     if "error" in results:
         return results
 
@@ -741,7 +741,7 @@ async def health():
     return {
         "status": "ok",
         "agent_server": agent_status,
-        "dedalus_configured": bool(DEDALUS_API_KEY),
+        "anthropic_configured": bool(ANTHROPIC_API_KEY),
         "tavily_configured": bool(TAVILY_API_KEY),
     }
 
