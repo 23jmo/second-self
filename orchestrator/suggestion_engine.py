@@ -24,15 +24,25 @@ MAX_SUGGESTIONS_PER_MINUTE = 3
 REWARDS_PATH = pathlib.Path.home() / ".secondself" / "rewards.jsonl"
 
 
+_anthropic_client = None
+
+
+def _get_client():
+    """Reuse a single Anthropic client instance."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
 def _call_claude_sync(system_prompt: str, user_content) -> str:
     """Synchronous Anthropic SDK call for suggestion generation. Returns raw text."""
-    import anthropic
-
     if not ANTHROPIC_API_KEY:
         return ""
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = _get_client()
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2048,
@@ -70,13 +80,16 @@ def _parse_suggestions(text: str) -> list[dict]:
             confidence = float(s.get("confidence", 0.5))
             if confidence < CONFIDENCE_THRESHOLD:
                 continue
+            # Stringify context values to match Swift's [String: String] type
+            raw_context = s.get("context", {})
+            context = {str(k): str(v) for k, v in raw_context.items()} if isinstance(raw_context, dict) else {}
             result.append({
                 "id": f"sug_{uuid.uuid4().hex[:8]}",
                 "title": s.get("title", "Suggestion"),
                 "description": s.get("description", ""),
                 "confidence": confidence,
                 "action_id": s.get("action_id", "general"),
-                "context": s.get("context", {}),
+                "context": context,
             })
         return result
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
@@ -135,8 +148,8 @@ def pattern_trigger(conversation_history: list[dict], profile: dict | None = Non
     Called after each job completes. Only suggests if 3+ requests share verb+object type.
     Returns a list of suggestion dicts (usually 0 or 1).
     """
-    # Need at least 3 user messages to detect a pattern
-    user_messages = [m["content"] for m in conversation_history if m.get("role") == "user"]
+    # Need at least 3 genuine user messages (skip suggestion-originated ones to prevent self-reinforcing loops)
+    user_messages = [m["content"] for m in conversation_history if m.get("role") == "user" and m.get("source", "user") == "user"]
     if len(user_messages) < 3:
         return []
 

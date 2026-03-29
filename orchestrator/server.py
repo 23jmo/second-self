@@ -540,15 +540,16 @@ def convert_to_a2ui(tool_name: str, args: dict) -> dict:
 # Agent loop — streaming (for POST /chat SSE)
 # ---------------------------------------------------------------------------
 
-async def run_agent_loop_streaming(task: str, max_steps: int = 15):
+async def run_agent_loop_streaming(task: str, max_steps: int = 15, source: str = "user"):
     """
     Streaming agentic loop using Anthropic SDK. Yields (event_type, data)
     tuples for SSE — same format the SwiftUI app already handles.
+    source: "user" for direct chat, "suggestion" for accepted proactive suggestions.
     """
     yield ("state", {"state": "thinking"})
 
-    # Record user message in session history
-    conversation_history.append({"role": "user", "content": task})
+    # Record user message in session history (tag source to prevent self-reinforcing patterns)
+    conversation_history.append({"role": "user", "content": task, "source": source})
 
     messages: list = [{"role": "user", "content": task}]
 
@@ -715,8 +716,9 @@ async def handle_anticipatory_setup(profile: dict) -> list:
 async def _check_pattern_suggestions() -> None:
     """Run pattern detection in a thread and broadcast any suggestions."""
     try:
+        # Snapshot to avoid race with /reset clearing the list mid-iteration
         suggestions = await asyncio.to_thread(
-            pattern_trigger, conversation_history, cached_profile
+            pattern_trigger, list(conversation_history), cached_profile
         )
         for suggestion in suggestions:
             await broadcast_event("suggestion", suggestion)
@@ -745,8 +747,9 @@ async def _ambient_loop() -> None:
                 continue
             if cached_profile is None:
                 continue
+            # Snapshot to avoid race with /reset clearing the list mid-iteration
             suggestions = await asyncio.to_thread(
-                ambient_tick, conversation_history, cached_profile
+                ambient_tick, list(conversation_history), cached_profile
             )
             for suggestion in suggestions:
                 await broadcast_event("suggestion", suggestion)
@@ -884,12 +887,22 @@ async def profile(request: Request):
     global cached_profile
     cached_profile = result
 
-    # Fire profile-based suggestions (Layer 1)
-    suggestions = await asyncio.to_thread(profile_trigger, result)
-    for suggestion in suggestions:
-        await broadcast_event("suggestion", suggestion)
+    # Fire profile-based suggestions (Layer 1) as background task
+    # so /profile response isn't blocked by the suggestion LLM call
+    asyncio.create_task(_fire_profile_suggestions(result))
 
     return result
+
+
+async def _fire_profile_suggestions(profile_data: dict) -> None:
+    """Background: generate and broadcast the best profile suggestion."""
+    try:
+        suggestions = await asyncio.to_thread(profile_trigger, profile_data)
+        if suggestions:
+            best = max(suggestions, key=lambda s: s.get("confidence", 0))
+            await broadcast_event("suggestion", best)
+    except Exception as e:
+        print(f"[orchestrator] Profile suggestion error: {e}")
 
 
 @app.post("/setup-twin")
@@ -940,8 +953,9 @@ async def _process_queued_message(message: str) -> None:
     """
     print(f"[orchestrator] Processing queued message: {message}")
     try:
-        async for _event_type, _event_data in run_agent_loop_streaming(message):
-            pass  # drive the generator; events are not sent anywhere
+        async for event_type, event_data in run_agent_loop_streaming(message, source="suggestion"):
+            # Broadcast progress to /events so accepted suggestions are visible
+            await broadcast_event(event_type, event_data)
     except Exception as exc:
         print(f"[orchestrator] Queued message error: {exc}")
         async with job_lock:
@@ -1145,7 +1159,8 @@ async def reset():
         current_job["message_queue"] = []
     conversation_history.clear()
     cached_profile = None
-    print("[orchestrator] State reset to idle (conversation + profile cleared)")
+    ambient_interval = 30.0  # Reset smart silence backoff for next demo visitor
+    print("[orchestrator] State reset to idle (conversation + profile + ambient interval cleared)")
     return {"status": "ok", "message": "State cleared"}
 
 
