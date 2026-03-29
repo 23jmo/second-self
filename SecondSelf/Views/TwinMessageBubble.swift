@@ -2,43 +2,48 @@ import SwiftUI
 
 // MARK: - Twin Message Bubble
 
-/// Chat bubble for messages from the Twin.
-/// Dark background, 0.5px border, italic text (Twin's voice), left-aligned.
+/// Chat bubble for Twin messages. Dark olive background, left-aligned, white text.
+/// Matches Figma node 90:112.
 struct TwinMessageBubble: View {
     let text: String
     let timestamp: Date
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .bottom, spacing: 0) {
+                // Tail on the left
+                BubbleTail(isUser: false)
+                    .fill(Color.ssTwinOlive)
+                    .frame(width: 15, height: 20)
+                    .offset(x: 4, y: -1)
+
                 Text(text)
-                    .font(.system(size: 13))
-                    .italic() // Twin has its own "voice"
-                    .foregroundColor(Color.ssTextPrimary)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
                     .textSelection(.enabled)
-
-                Text(formattedTime)
-                    .font(.system(size: 10))
-                    .foregroundColor(Color.ssTextSecondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.ssSurface)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.ssBorder, lineWidth: 0.5)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 15)
+                            .fill(Color.ssTwinOlive)
                     )
-            )
 
-            Spacer(minLength: 60)
+                Spacer(minLength: 60)
+            }
+
+            Text(formattedTime)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Color.ssCream.opacity(0.6))
         }
     }
 
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
     private var formattedTime: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: timestamp)
+        Self.timeFormatter.string(from: timestamp)
     }
 }

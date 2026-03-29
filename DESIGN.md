@@ -26,6 +26,7 @@
 
 | Token | Hex | RGB (0-1) | Usage |
 |-------|-----|-----------|-------|
+| Notch Black | #000000 | 0, 0, 0 | Notch-connected surfaces, panel top gradient start |
 | Twin Green | #B5B055 | 0.71, 0.69, 0.33 | Primary accent, character color, send button, tool calls |
 | Surface Dark | #1C1C1E | 0.11, 0.11, 0.118 | Notch panels, Twin message bubbles |
 | Surface Deeper | #0D0D0F | 0.051, 0.051, 0.059 | Deep backgrounds, chat area |
@@ -45,18 +46,29 @@
 - **Scale:** 2xs(2) xs(4) sm(8) md(16) lg(24) xl(32) 2xl(48) 3xl(64)
 
 ## Layout
-- **Approach:** Notch-anchored. Everything radiates from the notch.
-- **Panel states:** Collapsed (Twin head peek) → Expanded (Twin body + preview) → Full chat
+- **Approach:** Notch-anchored. Everything radiates from the notch. Alcove-style.
+- **Panel states:** Idle (notch pill + Twin peek) → Peek (hover, +status) → Expanded (Twin + VNC mini) → Full chat
+- **Notch detection:** `NSScreen.safeAreaInsets.top` for height, computed width + fine-tune slider
+- **Notch shape:** True black (#000000) top matching hardware, gradient to Surface Dark below
+- **Non-notch fallback:** Floating black pill at top-center of screen
 - **Max content width:** 420px (chat panel)
 - **Border radius:** sm 8px (tool pills), md 12px (message bubbles, panels), lg 16px (chat panel outer), full 9999px (input bar, buttons)
+- **Notch radius:** ~10pt top corners (matching hardware), 16pt bottom corners (design system)
 
 ## Motion
 - **Approach:** Intentional, physical. Alcove-style.
-- **Spring:** `.spring(response: 0.35, dampingFraction: 0.7)` for panel transitions
 - **Character:** Organic, weight-based. Overshoot on arrival, settle with slight bounce.
+- **Panel spring:** `.ssPanelSpring` — `spring(response: 0.3, dampingFraction: 0.85)` — panel transitions, DynamicNotchKit conversion
+- **Content reveal:** `.ssContentReveal` — `spring(response: 0.25, dampingFraction: 0.88)` — status line, VNC thumbnail, chips
+- **Message entrance:** `.ssMessageEntrance` — `spring(response: 0.3, dampingFraction: 0.9)` — chat bubble fade-in
+- **Micro-interaction:** `.ssMicro` — `spring(response: 0.2, dampingFraction: 0.85)` — button press, focus glow, pill expand
+- **Character transition:** `.ssCharacterTransition` — `spring(response: 0.3, dampingFraction: 0.85)` — Twin state changes
+- **Glow pulse:** `.ssGlowPulse` — `easeInOut(duration: 2.5)` — VNC PiP working glow
+- **Scroll:** `.ssScrollSpring` — `spring(response: 0.3, dampingFraction: 0.9)` — auto-scroll to latest message
 - **Easing:** enter(ease-out) exit(ease-in) move(ease-in-out)
-- **Duration:** typewriter 20-60ms/char, glow pulse 2s ease-in-out (opacity 0.1→0.3)
+- **Duration:** typewriter 20-60ms/char (deferred), glow pulse 2s ease-in-out (opacity 0.1→0.3)
 - **Rule:** No linear easing. Ever.
+- **Rule:** All animations use named tokens from DesignTokens.swift. No hardcoded springs.
 
 ## Anti-Slop Rules
 - No gradient glows on flat surfaces
@@ -79,3 +91,8 @@
 | 2026-03-28 | No custom fonts | Native macOS app. System fonts match the OS, zero loading, best performance. |
 | 2026-03-28 | Single accent color | Olive-green only. No secondary accents. Makes the Twin the visual focus of every screen. |
 | 2026-03-28 | Film grain texture | Subtle 2-3% opacity on dark surfaces. Adds warmth. Most notch apps are flat and sterile. |
+| 2026-03-28 | 4-state notch model | Idle/peek/expanded/fullChat. Alcove-style: hover-to-peek, click-to-expand, auto-expand on Twin activity. |
+| 2026-03-28 | True black notch top | #000000 at panel top matches hardware notch. Gradient to Surface Dark below. Erases HW/SW boundary. |
+| 2026-03-28 | No exterior shadows | Removed hasShadow and glow shadows from notch-connected surfaces. Silhouette + black fill only. |
+| 2026-03-28 | Fine-tune slider | UserDefaults-backed width adjustment slider in Settings. Covers per-model notch width variance. |
+| 2026-03-28 | Persistent hosting view | One NSHostingView, never destroyed/recreated. SwiftUI handles all transitions internally. |

@@ -19,6 +19,14 @@ final class ChatViewModel: ObservableObject {
     // The last tool action name from SSE events, shown in VNC bottom bar
     @Published var currentToolAction: String = ""
 
+    /// Tracks notch expansion: 0=compact, 1=status mini, 2=full chat
+    @Published var expansionStage: Int = 0
+
+    /// Callback for notch tap-to-expand. Set by NotchOverlayController.
+    var onNotchTap: (() -> Void)?
+    /// Callback for closing expanded notch. Set by NotchOverlayController.
+    var onNotchClose: (() -> Void)?
+
     private let orchestratorURL = URL(string: ServerConfig.chatEndpoint)!
     private var sseTask: URLSessionDataTask?
     private var reconnectTimer: Timer?
