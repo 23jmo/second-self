@@ -29,7 +29,7 @@ final class ElevenLabsService {
 
     private static let sttEndpoint = URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!
     private static let model = "scribe_v1"
-    private static let timeoutSeconds: TimeInterval = 5
+    private static let timeoutSeconds: TimeInterval = 30
 
     private let logger = Logger(subsystem: "com.secondself.app", category: "ElevenLabs")
 
@@ -62,14 +62,13 @@ final class ElevenLabsService {
             throw STTError.networkError(error)
         }
 
-        logger.info("Transcribing \(audioData.count) bytes of audio")
+        logger.info("Transcribing \(audioData.count) bytes from \(fileURL.lastPathComponent)")
 
         // Build multipart form body
         var form = MultipartFormData()
         form.addField(name: "model_id", value: Self.model)
         form.addField(name: "language_code", value: "en")
         form.addFile(name: "file", fileName: "recording.wav", mimeType: "audio/wav", data: audioData)
-        form.addField(name: "file_format", value: "other")
         form.finalize()
 
         // Build request
@@ -86,8 +85,10 @@ final class ElevenLabsService {
         do {
             (data, response) = try await URLSession.shared.data(for: request)
         } catch let error as URLError where error.code == .timedOut {
+            logger.error("Request timed out")
             throw STTError.timeout
         } catch {
+            logger.error("Network error: \(error.localizedDescription)")
             throw STTError.networkError(error)
         }
 
@@ -100,16 +101,18 @@ final class ElevenLabsService {
         case 200:
             break
         case 401:
+            logger.error("Auth failed (401)")
             throw STTError.authError
         default:
             let body = String(data: data, encoding: .utf8) ?? "Unknown error"
-            logger.error("STT failed with \(httpResponse.statusCode): \(body)")
+            logger.error("STT failed \(httpResponse.statusCode): \(body)")
             throw STTError.serverError(httpResponse.statusCode, body)
         }
 
         // Extract text from response JSON
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let text = json["text"] as? String else {
+            logger.error("Could not parse 'text' from response")
             throw STTError.emptyTranscription
         }
 

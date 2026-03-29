@@ -115,10 +115,10 @@ struct ExpandedNotchContent: View {
                 text: $chatViewModel.inputText,
                 isEnabled: chatViewModel.twinState != .thinking && chatViewModel.twinState != .working,
                 voiceState: chatViewModel.voiceState,
-                recordingDuration: chatViewModel.audioRecorder.recordingDuration,
+                audioLevel: chatViewModel.audioLevel,
                 onSend: { text in chatViewModel.sendMessage(text: text) },
-                onHoldStart: { chatViewModel.startRecording() },
-                onHoldEnd: { chatViewModel.stopRecording() },
+                onTapToRecord: { chatViewModel.startRecording() },
+                onTapToStop: { chatViewModel.stopRecording() },
                 onVoiceCancel: { chatViewModel.cancelVoiceRecording() },
                 onPermissionTap: { chatViewModel.requestMicPermission() }
             )

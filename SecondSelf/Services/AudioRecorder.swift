@@ -17,6 +17,7 @@ final class AudioRecorder: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var permissionState: PermissionState = .notDetermined
     @Published private(set) var recordingDuration: TimeInterval = 0
+    @Published private(set) var audioLevel: Float = 0  // 0.0 to 1.0, normalized mic level
 
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
@@ -102,9 +103,11 @@ final class AudioRecorder: ObservableObject {
 
         do {
             recorder = try AVAudioRecorder(url: url, settings: settings)
+            recorder?.isMeteringEnabled = true
             recorder?.record()
             isRecording = true
             recordingDuration = 0
+            audioLevel = 0
             startDurationTimer()
             logger.info("Recording started: \(fileName)")
         } catch {
@@ -166,15 +169,22 @@ final class AudioRecorder: ObservableObject {
     }
 
     private func startDurationTimer() {
-        durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.isRecording else { return }
-                self.recordingDuration += 0.1
+        durationTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self, self.isRecording else { return }
+            self.recordingDuration += 0.05
 
-                // Auto-stop at 120 seconds
-                if self.recordingDuration >= 120 {
-                    _ = self.stopRecording()
-                }
+            // Sample audio level from AVAudioRecorder metering
+            if let recorder = self.recorder {
+                recorder.updateMeters()
+                let dB = recorder.averagePower(forChannel: 0) // -160 to 0
+                // Normalize: -50dB (silence) to 0dB (loud) → 0.0 to 1.0
+                let normalized = max(0, min(1, (dB + 50) / 50))
+                self.audioLevel = normalized
+            }
+
+            // Auto-stop at 120 seconds
+            if self.recordingDuration >= 120 {
+                _ = self.stopRecording()
             }
         }
     }

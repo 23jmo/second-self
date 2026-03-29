@@ -14,6 +14,7 @@ final class ChatViewModel: ObservableObject {
     /// VNC feed stays visible once the agent starts working, until user dismisses.
     @Published var showVNCFeed: Bool = false
     @Published var voiceState: VoiceInputState = .hidden
+    @Published var audioLevel: Float = 0
 
     // The last tool action name from SSE events, shown in VNC bottom bar
     @Published var currentToolAction: String = ""
@@ -63,6 +64,11 @@ final class ChatViewModel: ObservableObject {
 
         // Check voice availability (API key in .env)
         checkVoiceAvailability()
+
+        // Forward audio level from AudioRecorder to this ViewModel so SwiftUI observes it
+        audioRecorder.$audioLevel
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$audioLevel)
     }
 
     // MARK: - VNC Feed
@@ -393,12 +399,12 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Start recording audio. Called when hold gesture fires after debounce.
+    /// Start recording audio.
     func startRecording() {
         guard voiceState == .idle else { return }
         audioRecorder.startRecording()
         voiceState = .recording
-        voiceLogger.info("Voice recording started")
+        voiceLogger.info("Recording started")
     }
 
     /// Stop recording and begin transcription.
@@ -406,7 +412,6 @@ final class ChatViewModel: ObservableObject {
         guard voiceState == .recording else { return }
 
         guard let fileURL = audioRecorder.stopRecording() else {
-            // Recording was too short
             setVoiceError("Hold longer to record")
             return
         }
@@ -454,13 +459,9 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func handleTranscription(text: String) {
-        if inputText.isEmpty {
-            inputText = text
-        } else {
-            inputText += " " + text
-        }
+        sendMessage(text: text)
         voiceState = .idle
-        voiceLogger.info("Transcription inserted: \(text.prefix(40))...")
+        voiceLogger.info("Voice message sent: \(text.prefix(40))...")
     }
 
     private func setVoiceError(_ message: String) {
