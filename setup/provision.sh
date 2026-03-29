@@ -96,18 +96,45 @@ WS_COUNT=$(ps aux | grep -c "[W]indowServer")
 if [ "$WS_COUNT" -lt 2 ]; then
     echo ""
     echo "  ╔══════════════════════════════════════════════════════╗"
-    echo "  ║  ONE MANUAL STEP REQUIRED (first time only):        ║"
+    echo "  ║  MANUAL STEPS REQUIRED (first time only):           ║"
     echo "  ║                                                      ║"
     echo "  ║  1. Click user icon in menu bar                      ║"
     echo "  ║  2. Switch to 'secondself'                           ║"
     echo "  ║  3. Log in with the password you just set            ║"
     echo "  ║  4. Grant Accessibility to Terminal if prompted       ║"
-    echo "  ║  5. Switch back to your account                      ║"
+    echo "  ║  5. Grant Screen Recording (see below)               ║"
+    echo "  ║  6. Switch back to your account                      ║"
     echo "  ║                                                      ║"
     echo "  ║  This creates the GUI session. Only needed once.     ║"
     echo "  ╚══════════════════════════════════════════════════════╝"
     echo ""
+    echo "  Screen Recording permission is needed for VNC + screenshots."
+    echo "  While logged in as secondself:"
+    echo "    System Settings > Privacy & Security > Screen Recording"
+    echo "    Enable: python3, Vine Server, Terminal"
+    echo ""
     read -p "  Press Enter after switching back to continue..."
+    echo ""
+else
+    echo "  GUI session already active."
+fi
+
+# Verify Screen Recording permission by testing a screenshot
+echo "  Checking Screen Recording permission..."
+SCREENSHOT_TEST=$(sudo -u "$SECOND_USER" /opt/homebrew/bin/python3 -c "
+import Quartz
+ref = Quartz.CGWindowListCreateImage(Quartz.CGRectInfinite, Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID, Quartz.kCGWindowImageDefault)
+print('OK' if ref else 'DENIED')
+" 2>/dev/null || echo "ERROR")
+
+if echo "$SCREENSHOT_TEST" | grep -q "OK"; then
+    echo "    ✅ Screen Recording granted"
+else
+    echo "    ⚠️  Screen Recording NOT granted for python3"
+    echo ""
+    echo "    To fix: switch to secondself and run:"
+    echo "      open 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'"
+    echo "    Then enable python3 and Vine Server."
     echo ""
 fi
 

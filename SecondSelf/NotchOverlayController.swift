@@ -3,7 +3,7 @@ import AppKit
 
 // MARK: - Panel State
 
-enum PanelState {
+enum PanelState: Equatable {
     case collapsed   // Twin head peek below notch (~60x40)
     case expanded    // Twin body + status line (~300x120)
     case fullChat    // Full chat interface (~420x560)
@@ -48,15 +48,27 @@ final class OverlayPanel: NSPanel {
     }
 }
 
+// MARK: - Panel State Manager
+// Observable wrapper so SwiftUI can react to panelState changes without
+// recreating the entire NSHostingView on every transition.
+
+final class PanelStateManager: ObservableObject {
+    @Published var panelState: PanelState = .collapsed
+}
+
 // MARK: - Notch Overlay Controller
 
 final class NotchOverlayController: NSObject, NSWindowDelegate {
     private var panel: OverlayPanel!
     private var chatViewModel: ChatViewModel
-    private(set) var panelState: PanelState = .collapsed
+    private let stateManager = PanelStateManager()
 
-    // Click-outside monitor
+    var panelState: PanelState { stateManager.panelState }
+
+    // Event monitors
     private var clickOutsideMonitor: Any?
+    private var escapeKeyMonitor: Any?
+    private var escapeKeyLocalMonitor: Any?
 
     override init() {
         self.chatViewModel = ChatViewModel()
@@ -65,6 +77,7 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
         positionPanel()
         panel.orderFrontRegardless()
         installClickOutsideMonitor()
+        installEscapeKeyMonitor()
     }
 
     // MARK: - Panel Setup
@@ -81,20 +94,17 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
         )
         panel.delegate = self
 
-        updatePanelContent()
-    }
-
-    private func updatePanelContent() {
+        // Create the NSHostingView ONCE. SwiftUI observes stateManager reactively.
         let hostingView = NSHostingView(
             rootView: NotchOverlayView(
-                panelState: panelState,
+                stateManager: stateManager,
                 chatViewModel: chatViewModel,
                 onCollapsedTap: { [weak self] in self?.transitionTo(.expanded) },
                 onExpandedTap: { [weak self] in self?.transitionTo(.fullChat) },
                 onClose: { [weak self] in self?.transitionTo(.collapsed) }
             )
         )
-        hostingView.frame = NSRect(origin: .zero, size: panelState.size)
+        hostingView.frame = NSRect(origin: .zero, size: initialSize)
         panel.contentView = hostingView
     }
 
@@ -120,7 +130,13 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
 
     func transitionTo(_ newState: PanelState) {
         guard newState != panelState else { return }
-        panelState = newState
+
+        // Reset VNC expanded state when leaving fullChat
+        if stateManager.panelState == .fullChat && newState != .fullChat {
+            chatViewModel.isVNCExpanded = false
+        }
+
+        stateManager.panelState = newState
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.35
@@ -131,7 +147,8 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
             panel.animator().setFrame(frameForState(newState), display: true)
         }
 
-        updatePanelContent()
+        // Resize the hosting view to match (SwiftUI handles content reactively)
+        panel.contentView?.frame = NSRect(origin: .zero, size: newState.size)
     }
 
     func togglePanel() {
@@ -149,7 +166,7 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
         clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] event in
-            guard let self = self, self.panelState != .collapsed else { return }
+            guard let self = self, self.stateManager.panelState != .collapsed else { return }
 
             // Check if the click is outside our panel
             let clickLocation = NSEvent.mouseLocation
@@ -159,8 +176,39 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: - Escape Key
+
+    private func installEscapeKeyMonitor() {
+        // Global monitor: fires when app is NOT frontmost
+        escapeKeyMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: .keyDown
+        ) { [weak self] event in
+            guard let self = self, event.keyCode == 53 else { return }
+            if self.chatViewModel.isVNCExpanded {
+                self.chatViewModel.isVNCExpanded = false
+            }
+        }
+        // Local monitor: fires when panel has focus (canBecomeKey = true)
+        escapeKeyLocalMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .keyDown
+        ) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            if let self = self, self.chatViewModel.isVNCExpanded {
+                self.chatViewModel.isVNCExpanded = false
+                return nil // consume the event
+            }
+            return event
+        }
+    }
+
     deinit {
         if let monitor = clickOutsideMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = escapeKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = escapeKeyLocalMonitor {
             NSEvent.removeMonitor(monitor)
         }
     }
@@ -169,7 +217,7 @@ final class NotchOverlayController: NSObject, NSWindowDelegate {
 // MARK: - Root SwiftUI Overlay View
 
 struct NotchOverlayView: View {
-    let panelState: PanelState
+    @ObservedObject var stateManager: PanelStateManager
     @ObservedObject var chatViewModel: ChatViewModel
     let onCollapsedTap: () -> Void
     let onExpandedTap: () -> Void
@@ -177,7 +225,7 @@ struct NotchOverlayView: View {
 
     var body: some View {
         ZStack {
-            switch panelState {
+            switch stateManager.panelState {
             case .collapsed:
                 CollapsedView(onTap: onCollapsedTap)
             case .expanded:
@@ -194,9 +242,10 @@ struct NotchOverlayView: View {
             }
         }
         .frame(
-            width: panelState.size.width,
-            height: panelState.size.height
+            width: stateManager.panelState.size.width,
+            height: stateManager.panelState.size.height
         )
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: stateManager.panelState)
     }
 }
 
@@ -285,39 +334,75 @@ struct FullChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header bar
-            HStack {
-                TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
-                    .frame(width: 32, height: 32)
+            // Header bar: swaps between chat header and VNC header
+            if chatViewModel.isVNCExpanded {
+                // VNC expanded header
+                HStack {
+                    Button(action: { chatViewModel.isVNCExpanded = false }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Color.ssTextSecondary)
+                    }
+                    .buttonStyle(.plain)
 
-                Text("Second Self")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color.ssTextPrimary)
+                    TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
+                        .frame(width: 24, height: 24)
 
-                Spacer()
+                    Text("Twin's Desktop")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Color.ssTextPrimary)
 
-                // Connection status dot
-                Circle()
-                    .fill(chatViewModel.isConnected ? Color.ssSuccess : Color.ssError)
-                    .frame(width: 6, height: 6)
+                    Spacer()
 
-                // Close button
-                Button(action: onClose) {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color.ssTextSecondary)
+                    Circle()
+                        .fill(chatViewModel.isConnected ? Color.ssSuccess : Color.ssError)
+                        .frame(width: 6, height: 6)
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.ssBackground)
+            } else {
+                // Chat header
+                HStack {
+                    TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
+                        .frame(width: 32, height: 32)
+
+                    Text("Second Self")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(Color.ssTextPrimary)
+
+                    Spacer()
+
+                    Circle()
+                        .fill(chatViewModel.isConnected ? Color.ssSuccess : Color.ssError)
+                        .frame(width: 6, height: 6)
+
+                    Button(action: onClose) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Color.ssTextSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color.ssBackground)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color.ssBackground)
 
             Divider()
                 .background(Color.ssBorder)
 
-            // Chat messages + input
-            ChatView(viewModel: chatViewModel)
+            // Content: swap between chat and VNC expanded
+            if chatViewModel.isVNCExpanded {
+                VNCExpandedContentView(
+                    streamer: chatViewModel.mjpegStreamer,
+                    twinState: chatViewModel.twinState,
+                    currentToolAction: chatViewModel.currentToolAction,
+                    onBack: { chatViewModel.isVNCExpanded = false }
+                )
+            } else {
+                ChatView(viewModel: chatViewModel)
+            }
         }
         .frame(width: 420, height: 560)
         .background(
@@ -329,6 +414,13 @@ struct FullChatView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: chatViewModel.isVNCExpanded)
+        .onAppear {
+            chatViewModel.mjpegStreamer.start()
+        }
+        .onDisappear {
+            chatViewModel.mjpegStreamer.stop()
+        }
     }
 }
 

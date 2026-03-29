@@ -10,31 +10,45 @@ struct ChatView: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             VStack(spacing: 0) {
-                // Message list
-                ScrollViewReader { scrollProxy in
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(viewModel.messages) { message in
-                                messageView(for: message)
-                                    .id(message.id)
-                            }
+                // Message list with notch fade overlay
+                ZStack(alignment: .top) {
+                    ScrollViewReader { scrollProxy in
+                        ScrollView {
+                            LazyVStack(spacing: 8) {
+                                // Top inset so content starts below the notch area
+                                Spacer().frame(height: 36)
 
-                            // "Twin is working..." indicator
-                            if viewModel.twinState == .thinking || viewModel.twinState == .working {
-                                TwinWorkingIndicator(state: viewModel.twinState)
-                                    .id("working-indicator")
+                                ForEach(viewModel.messages) { message in
+                                    messageView(for: message)
+                                        .id(message.id)
+                                }
+
+                                // "Twin is working..." indicator
+                                if viewModel.twinState == .thinking || viewModel.twinState == .working {
+                                    TwinWorkingIndicator(state: viewModel.twinState)
+                                        .id("working-indicator")
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                        }
+                        .onChange(of: viewModel.messages.count) { _ in
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                if let lastMessage = viewModel.messages.last {
+                                    scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                }
                             }
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
                     }
-                    .onChange(of: viewModel.messages.count) { _ in
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            if let lastMessage = viewModel.messages.last {
-                                scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
-                        }
-                    }
+
+                    // Gradient fade at top to mask content scrolling under the notch
+                    LinearGradient(
+                        colors: [Color.ssSurface, Color.ssSurface, Color.ssSurface.opacity(0)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 44)
+                    .allowsHitTesting(false)
                 }
 
                 // Input bar
@@ -51,9 +65,13 @@ struct ChatView: View {
             }
 
             // VNC PiP thumbnail in bottom-right
-            VNCPipView(twinState: viewModel.twinState)
-                .padding(.trailing, 16)
-                .padding(.bottom, 72) // Above the input bar
+            VNCPipView(
+                streamer: viewModel.mjpegStreamer,
+                twinState: viewModel.twinState,
+                onExpand: { viewModel.isVNCExpanded = true }
+            )
+            .padding(.trailing, 16)
+            .padding(.bottom, 72) // Above the input bar
         }
         .background(Color.ssSurface)
     }
@@ -69,6 +87,16 @@ struct ChatView: View {
             }
         case .toolCall(let tool, let args, let result):
             ToolCallPill(tool: tool, args: args, result: result)
+        case .component(let payload):
+            A2UIRenderer(
+                payload: payload,
+                isStreaming: viewModel.streamingComponentID == message.id,
+                onAction: { actionId, context in
+                    viewModel.sendComponentAction(actionId: actionId, context: context)
+                }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .animation(.spring(response: 0.35, dampingFraction: 0.7), value: message.id)
         }
     }
 }
