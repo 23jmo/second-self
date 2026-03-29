@@ -143,6 +143,7 @@ TOOLS = {
     "/browser/screenshot": lambda body: run_browser("screenshot"),
     "/browser/text": lambda body: run_browser("get", "text"),
     "/browser/press": lambda body: run_browser("keys", body["key"]),
+    "/browser/close": lambda body: run_browser("close"),
 }
 
 

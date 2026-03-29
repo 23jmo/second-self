@@ -705,6 +705,13 @@ async def lifespan(application: FastAPI):
     except Exception as e:
         print(f"[orchestrator] Could not load Google auth: {e}. Productivity tools disabled.")
 
+    # Clear stale browser-use session from previous app run
+    try:
+        result = await asyncio.to_thread(call_agent_server, "/browser/close", {})
+        print(f"[orchestrator] Browser session cleared on startup")
+    except Exception:
+        print("[orchestrator] Could not clear browser session (agent-server may not be running)")
+
     print(f"[orchestrator] Starting on port {PORT}")
     print(f"[orchestrator] Agent Server expected at {AGENT_SERVER_URL}")
     print(f"[orchestrator] Model: {CLAUDE_MODEL}")
