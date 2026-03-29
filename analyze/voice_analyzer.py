@@ -8,11 +8,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+import anthropic
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_PATH = Path("output/voice_profile.json")
+_DEFAULT_MODEL = "claude-sonnet-4-20250514"
 _MAX_LLM_TOKENS = 800
 _SAMPLE_SIZE = 50
 
@@ -264,16 +266,39 @@ def _build_text_block(sent_emails: list[dict[str, Any]]) -> str:
     return "\n---\n".join(bodies)
 
 
-def _call_gemini(prompt: str, text_block: str) -> dict[str, Any]:
-    """Send a prompt + text block to Gemini and parse JSON response."""
+def _call_claude(prompt: str, text_block: str) -> dict[str, Any]:
+    """Send a prompt + text block to Claude and parse JSON response."""
     load_dotenv()
-    # Import here to avoid circular deps and allow standalone testing
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from src.synthesis.gemini_client import call_gemini_json
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY must be set in .env")
+    model = os.environ.get("CLAUDE_MODEL", _DEFAULT_MODEL)
 
+    client = anthropic.Anthropic(api_key=api_key)
     full_prompt = f"{prompt}\n\n---\n\n{text_block}"
-    return call_gemini_json(full_prompt, max_tokens=_MAX_LLM_TOKENS)
+
+    # Retry once with higher temperature if temp=0 produces non-JSON
+    temperatures = [0, 0.3]
+    for attempt, temp in enumerate(temperatures):
+        response = client.messages.create(
+            model=model,
+            max_tokens=_MAX_LLM_TOKENS,
+            temperature=temp,
+            messages=[{"role": "user", "content": full_prompt}],
+        )
+        raw_text = response.content[0].text.strip()
+        # Strip markdown fences if present
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            if attempt == 0:
+                logger.warning("LLM returned non-JSON (temp=0), retrying with temp=0.3. Raw: %.200s", raw_text)
+            else:
+                logger.error("LLM returned non-JSON after retry. Raw: %.200s", raw_text)
+    return {}
 
 
 def _extract_vocabulary_markers(text_block: str) -> list[str]:
@@ -285,7 +310,7 @@ def _extract_vocabulary_markers(text_block: str) -> list[str]:
         "voice. Exclude common function words (the, a, is, etc.). "
         "JSON only. No preamble, no markdown."
     )
-    result = _call_gemini(prompt, text_block)
+    result = _call_claude(prompt, text_block)
     markers = result.get("vocabulary_markers", [])
     if isinstance(markers, list):
         return markers[:15]
@@ -299,7 +324,7 @@ def _extract_tone_descriptor(text_block: str) -> str:
         "describing the overall tone. Choose from: casual, formal, terse, verbose, warm, "
         "direct, analytical, playful. JSON only."
     )
-    result = _call_gemini(prompt, text_block)
+    result = _call_claude(prompt, text_block)
     return result.get("tone_descriptor", "unknown")
 
 

@@ -1,4 +1,4 @@
-google-genai
+anthropic>=0.76.0
 tavily-python>=0.3.0
 fastapi>=0.115.0
 uvicorn>=0.30.0

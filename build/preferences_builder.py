@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import anthropic
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_PATH = Path("output/preferences.md")
 SECONDSELF_PATH = Path.home() / ".secondself" / "preferences.md"
 _MAX_AGE_DAYS = 7
+_DEFAULT_MODEL = "claude-sonnet-4-20250514"
 _MAX_LLM_TOKENS = 1200
 
 _PROMPT = (
@@ -185,14 +187,36 @@ def _build_text_block(data: dict[str, Any]) -> str:
     return "\n\n---\n\n".join(sections) if sections else "No data available."
 
 
-def _call_gemini(text_block: str) -> dict[str, Any]:
-    """Send prompt + data to Gemini and parse JSON response."""
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from src.synthesis.gemini_client import call_gemini_json
+def _call_claude(text_block: str) -> dict[str, Any]:
+    """Send prompt + data to Claude and parse JSON response."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY must be set in .env")
+    model = os.environ.get("CLAUDE_MODEL", _DEFAULT_MODEL)
 
+    client = anthropic.Anthropic(api_key=api_key)
     full_prompt = f"{_PROMPT}\n\n---\n\n{text_block}"
-    return call_gemini_json(full_prompt, max_tokens=_MAX_LLM_TOKENS)
+
+    temperatures = [0, 0.3]
+    for attempt, temp in enumerate(temperatures):
+        response = client.messages.create(
+            model=model,
+            max_tokens=_MAX_LLM_TOKENS,
+            temperature=temp,
+            messages=[{"role": "user", "content": full_prompt}],
+        )
+        raw_text = response.content[0].text.strip()
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            if attempt == 0:
+                logger.warning("LLM returned non-JSON (temp=0), retrying. Raw: %.200s", raw_text)
+            else:
+                logger.error("LLM returned non-JSON after retry. Raw: %.200s", raw_text)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +382,7 @@ def build_preferences(
 
     # LLM synthesis
     text_block = _build_text_block(data)
-    raw_prefs = _call_gemini(text_block)
+    raw_prefs = _call_claude(text_block)
 
     if not raw_prefs:
         logger.error("LLM returned empty response. Using empty preferences.")

@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -317,47 +317,70 @@ def test_build_text_block_skips_empty_bodies() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _call_gemini
+# _call_claude
 # ---------------------------------------------------------------------------
 
-def test_call_gemini_parses_json() -> None:
-    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"key": "value"}), \
-         patch("analyze.voice_analyzer.load_dotenv"):
-        result = va._call_gemini("prompt", "text")
+def test_call_claude_parses_json() -> None:
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text='{"key": "value"}')]
+    mock_client.return_value.messages.create.return_value = mock_response
+
+    with patch("analyze.voice_analyzer.anthropic.Anthropic", mock_client), \
+         patch("analyze.voice_analyzer.load_dotenv"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        result = va._call_claude("prompt", "text")
     assert result == {"key": "value"}
 
 
-def test_call_gemini_strips_markdown_fences() -> None:
-    # Markdown fence stripping is now handled inside call_gemini_json
-    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"key": "value"}), \
-         patch("analyze.voice_analyzer.load_dotenv"):
-        result = va._call_gemini("prompt", "text")
+def test_call_claude_strips_markdown_fences() -> None:
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text='```json\n{"key": "value"}\n```')]
+    mock_client.return_value.messages.create.return_value = mock_response
+
+    with patch("analyze.voice_analyzer.anthropic.Anthropic", mock_client), \
+         patch("analyze.voice_analyzer.load_dotenv"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        result = va._call_claude("prompt", "text")
     assert result == {"key": "value"}
 
 
-def test_call_gemini_retries_on_non_json() -> None:
-    # Retry logic is now handled inside call_gemini_json; test that
-    # _call_gemini passes through whatever call_gemini_json returns
-    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"ok": True}), \
-         patch("analyze.voice_analyzer.load_dotenv"):
-        result = va._call_gemini("prompt", "text")
+def test_call_claude_retries_on_non_json() -> None:
+    mock_client = MagicMock()
+    # First call returns non-JSON, second returns valid JSON
+    bad_response = MagicMock()
+    bad_response.content = [MagicMock(text="not json at all")]
+    good_response = MagicMock()
+    good_response.content = [MagicMock(text='{"ok": true}')]
+    mock_client.return_value.messages.create.side_effect = [bad_response, good_response]
+
+    with patch("analyze.voice_analyzer.anthropic.Anthropic", mock_client), \
+         patch("analyze.voice_analyzer.load_dotenv"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        result = va._call_claude("prompt", "text")
     assert result == {"ok": True}
+    assert mock_client.return_value.messages.create.call_count == 2
 
 
-def test_call_gemini_returns_empty_after_two_failures() -> None:
-    # call_gemini_json returns {} on parse failure after retries
-    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={}), \
-         patch("analyze.voice_analyzer.load_dotenv"):
-        result = va._call_gemini("prompt", "text")
+def test_call_claude_returns_empty_after_two_failures() -> None:
+    mock_client = MagicMock()
+    bad_response = MagicMock()
+    bad_response.content = [MagicMock(text="not json")]
+    mock_client.return_value.messages.create.return_value = bad_response
+
+    with patch("analyze.voice_analyzer.anthropic.Anthropic", mock_client), \
+         patch("analyze.voice_analyzer.load_dotenv"), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+        result = va._call_claude("prompt", "text")
     assert result == {}
 
 
-def test_call_gemini_missing_api_key() -> None:
+def test_call_claude_missing_api_key() -> None:
     with patch("analyze.voice_analyzer.load_dotenv"), \
-         patch("src.synthesis.gemini_client.call_gemini_json",
-               side_effect=EnvironmentError("GEMINI_API_KEY must be set in .env")):
-        with pytest.raises(EnvironmentError, match="GEMINI_API_KEY"):
-            va._call_gemini("prompt", "text")
+         patch.dict("os.environ", {}, clear=True):
+        with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
+            va._call_claude("prompt", "text")
 
 
 # ---------------------------------------------------------------------------
@@ -365,32 +388,32 @@ def test_call_gemini_missing_api_key() -> None:
 # ---------------------------------------------------------------------------
 
 def test_extract_vocabulary_markers() -> None:
-    with patch("analyze.voice_analyzer._call_gemini", return_value={"vocabulary_markers": ["word1", "word2"]}):
+    with patch("analyze.voice_analyzer._call_claude", return_value={"vocabulary_markers": ["word1", "word2"]}):
         result = va._extract_vocabulary_markers("text block")
     assert result == ["word1", "word2"]
 
 
 def test_extract_vocabulary_markers_caps_at_15() -> None:
     markers = [f"word{i}" for i in range(20)]
-    with patch("analyze.voice_analyzer._call_gemini", return_value={"vocabulary_markers": markers}):
+    with patch("analyze.voice_analyzer._call_claude", return_value={"vocabulary_markers": markers}):
         result = va._extract_vocabulary_markers("text block")
     assert len(result) == 15
 
 
 def test_extract_vocabulary_markers_empty_response() -> None:
-    with patch("analyze.voice_analyzer._call_gemini", return_value={}):
+    with patch("analyze.voice_analyzer._call_claude", return_value={}):
         result = va._extract_vocabulary_markers("text block")
     assert result == []
 
 
 def test_extract_tone_descriptor() -> None:
-    with patch("analyze.voice_analyzer._call_gemini", return_value={"tone_descriptor": "casual"}):
+    with patch("analyze.voice_analyzer._call_claude", return_value={"tone_descriptor": "casual"}):
         result = va._extract_tone_descriptor("text block")
     assert result == "casual"
 
 
 def test_extract_tone_descriptor_missing() -> None:
-    with patch("analyze.voice_analyzer._call_gemini", return_value={}):
+    with patch("analyze.voice_analyzer._call_claude", return_value={}):
         result = va._extract_tone_descriptor("text block")
     assert result == "unknown"
 
