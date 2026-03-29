@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { renderMarkdown } from "@/lib/renderMarkdown";
 
 // ─── Types ──────────────────────────────────────
 
@@ -49,8 +50,8 @@ function TwinMessage({ content, timestamp }: { content: string; timestamp: strin
       transition={{ duration: 0.3, ease: "easeOut" }}
       className="flex flex-col gap-1 max-w-[85%]"
     >
-      <div className="bg-[#141417] border border-[#333] rounded-[12px] px-3 py-2.5">
-        <p className="text-[13px] text-[#f5f5f7] italic leading-relaxed">{content}</p>
+      <div className="bg-[#141417] border border-[#333] rounded-[12px] px-3 py-2.5 text-[13px] text-[#f5f5f7] italic leading-relaxed space-y-2">
+        {renderMarkdown(content)}
       </div>
       <span className="text-[10px] text-[#8e8e93] pl-1">{timestamp}</span>
     </motion.div>
@@ -267,8 +268,8 @@ export default function ChatView({
             {isThinking && <ThinkingIndicator />}
           </AnimatePresence>
 
-          {/* VNC PiP */}
-          <VncPip streamUrl={vncStreamUrl} />
+          {/* VNC PiP — only show when stream is active */}
+          {vncStreamUrl && <VncPip streamUrl={vncStreamUrl} />}
         </div>
 
         {/* Input */}
