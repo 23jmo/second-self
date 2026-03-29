@@ -240,23 +240,15 @@ def main():
     print(f"[agent-server] Available tools: {list(TOOLS.keys())}")
     ThreadingHTTPServer.allow_reuse_address = True
 
-    # Try the default port, fall back to next available if zombie socket exists
-    bound_port = PORT
-    server = None
-    for try_port in [PORT, PORT + 1, PORT + 2]:
-        try:
-            server = ThreadingHTTPServer(("127.0.0.1", try_port), AgentHandler)
-            bound_port = try_port
-            break
-        except OSError as e:
-            if e.errno == 48:
-                print(f"[agent-server] Port {try_port} busy, trying next...")
-                continue
-            raise
-    if server is None:
-        print(f"[agent-server] ERROR: Could not bind to any port ({PORT}-{PORT+2})")
-        return
-    print(f"[agent-server] Starting on port {bound_port}")
+    # Bind to the fixed port. The rest of the stack hardcodes :8421.
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", PORT), AgentHandler)
+    except OSError as e:
+        if e.errno == 48:
+            print(f"[agent-server] ERROR: Port {PORT} already in use. Kill the old process: sudo pkill -9 -f 'agent-server/server.py'")
+            return
+        raise
+    print(f"[agent-server] Starting on port {PORT}")
 
     # Verify browser-use CLI is available
     bu_check = run_browser("doctor", timeout=10)

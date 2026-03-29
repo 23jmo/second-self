@@ -187,8 +187,25 @@ final class ChatViewModel: ObservableObject {
 
     private func handleToolResult(data: String) {
         guard let jsonData = data.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let result = json["result"] as? String else {
+              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            return
+        }
+
+        // Parse result as either a String or a JSON dict
+        let displayResult: String
+        if let stringResult = json["result"] as? String {
+            displayResult = stringResult
+        } else if let dictResult = json["result"] as? [String: Any] {
+            // Try to extract a "status" field for a concise display string
+            if let status = dictResult["status"] as? String {
+                displayResult = status
+            } else if let serialized = try? JSONSerialization.data(withJSONObject: dictResult, options: [.sortedKeys]),
+                      let jsonString = String(data: serialized, encoding: .utf8) {
+                displayResult = jsonString
+            } else {
+                displayResult = "\(dictResult)"
+            }
+        } else {
             return
         }
 
@@ -198,7 +215,7 @@ final class ChatViewModel: ObservableObject {
             return false
         }) {
             if case .toolCall(let tool, let args, _) = messages[lastToolIndex].content {
-                messages[lastToolIndex].content = .toolCall(tool: tool, args: args, result: result)
+                messages[lastToolIndex].content = .toolCall(tool: tool, args: args, result: displayResult)
             }
         }
     }
@@ -215,6 +232,11 @@ final class ChatViewModel: ObservableObject {
     func handleStreamError(_ error: Error) {
         isConnected = false
         currentTwinMessageID = nil
+
+        // Always reset twinState so the input field re-enables
+        if twinState == .thinking || twinState == .working {
+            twinState = .idle
+        }
 
         // Don't show error for cancelled tasks (intentional disconnects)
         if (error as NSError).code == NSURLErrorCancelled { return }

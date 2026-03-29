@@ -843,6 +843,33 @@ async def demo(request: Request):
     }
 
 
+async def _process_queued_message(message: str) -> None:
+    """
+    Background task that runs the streaming agent loop for a queued message.
+
+    The original caller already received a 202 (queued) response, so there is
+    no SSE stream to push events to.  We simply consume the async generator to
+    drive tool execution and state transitions.  When the loop finishes we
+    return the job to idle and check for more queued work.
+    """
+    print(f"[orchestrator] Processing queued message: {message}")
+    try:
+        async for _event_type, _event_data in run_agent_loop_streaming(message):
+            pass  # drive the generator; events are not sent anywhere
+    except Exception as exc:
+        print(f"[orchestrator] Queued message error: {exc}")
+        async with job_lock:
+            current_job["state"] = "error"
+    finally:
+        async with job_lock:
+            await set_job_state("idle")
+            # Continue draining: if more messages are queued, kick off the next one.
+            if current_job["message_queue"]:
+                next_message = current_job["message_queue"].pop(0)
+                await set_job_state("thinking", task=next_message)
+                asyncio.create_task(_process_queued_message(next_message))
+
+
 @app.post("/chat")
 async def chat(request: Request):
     """
@@ -891,6 +918,13 @@ async def chat(request: Request):
             # Always return to idle state after stream ends
             async with job_lock:
                 await set_job_state("idle")
+                # Drain the message queue: if there are queued messages, start
+                # processing the next one as a background task so it is not
+                # silently dropped.
+                if current_job["message_queue"]:
+                    next_message = current_job["message_queue"].pop(0)
+                    await set_job_state("thinking", task=next_message)
+                    asyncio.create_task(_process_queued_message(next_message))
 
     return StreamingResponse(
         event_stream(),
