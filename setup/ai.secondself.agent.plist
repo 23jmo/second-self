@@ -26,7 +26,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/opt/homebrew/bin:/Users/secondself/.npm-global/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/Users/secondself/Library/Python/3.14/bin:/Users/secondself/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>/Users/secondself</string>
         <key>TMPDIR</key>

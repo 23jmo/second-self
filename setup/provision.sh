@@ -55,29 +55,23 @@ if [ ! -x "$PYTHON" ]; then
 fi
 echo "  Using: $PYTHON"
 
+# Install agent-server deps (pyautogui, Pillow, Quartz, browser-use CLI)
+echo "  Installing agent-server deps..."
 sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
-    pyautogui Pillow pyobjc-framework-Quartz 2>&1 | tail -3 || {
-    echo "  ⚠️  pip install failed. May need manual install in secondself session."
+    -r "$REPO_DIR/agent-server/requirements.txt" 2>&1 | tail -5 || {
+    echo "  ⚠️  agent-server deps install failed."
 }
 
-# Install orchestrator dependencies (anthropic, fastapi, uvicorn, etc.)
-if [ -f "$REPO_DIR/orchestrator/requirements.txt" ]; then
-    echo "  Installing orchestrator deps..."
-    sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
-        -r "$REPO_DIR/orchestrator/requirements.txt" 2>&1 | tail -3 || {
-        echo "  ⚠️  orchestrator deps install failed."
-    }
-fi
+# Install orchestrator deps (anthropic, fastapi, uvicorn, etc.)
+echo "  Installing orchestrator deps..."
+sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
+    -r "$REPO_DIR/orchestrator/requirements.txt" 2>&1 | tail -5 || {
+    echo "  ⚠️  orchestrator deps install failed."
+}
 echo ""
 
-# ─── Step 4: Install browser-use CLI ───
-echo "[4/10] Installing browser-use CLI..."
-sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
-    "browser-use[cli]" 2>&1 | tail -3 || {
-    echo "  ⚠️  browser-use install failed."
-}
-
-echo "  Installing Chromium for browser-use..."
+# ─── Step 4: Install Chromium for browser-use ───
+echo "[4/10] Installing Chromium for browser-use..."
 sudo -H -u "$SECOND_USER" bash -c 'cd /tmp && browser-use install' 2>&1 | tail -5 || {
     echo "  ⚠️  Chromium install failed. Try: sudo -H -u $SECOND_USER bash -c 'cd /tmp && browser-use install'"
 }

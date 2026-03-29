@@ -11,12 +11,10 @@ struct VNCPipView: View {
 
     @StateObject private var streamer = MJPEGStreamer()
     @State private var isHovered: Bool = false
-    @State private var expandedWindow: NSWindow?
     @State private var glowPhase: Bool = false
-    @State private var livePhase: Bool = false
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack(alignment: .bottom) {
             // Live desktop feed
             Group {
                 if let image = streamer.currentFrame {
@@ -44,78 +42,40 @@ struct VNCPipView: View {
                 radius: twinState == .working ? 8 : 4
             )
 
+            // Take Control button — launches TigerVNC on hover
+            if isHovered {
+                Button(action: { launchTigerVNC() }) {
+                    Text("Take Control")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.ssTwinGreen.opacity(0.85)))
+                }
+                .buttonStyle(.plain)
+                .padding(.bottom, 8)
+                .transition(.opacity)
+            }
         }
-        .scaleEffect(isHovered ? 1.02 : 1.0)
         .animation(.ssMicro, value: isHovered)
         .animation(.ssGlowPulse.repeatForever(autoreverses: true), value: glowPhase)
-        .animation(.ssLiveBlink.repeatForever(autoreverses: true), value: livePhase)
         .onHover { hovering in
             isHovered = hovering
-        }
-        .onTapGesture {
-            openExpandedVNCWindow()
         }
         .onAppear {
             streamer.start()
             glowPhase = true
-            livePhase = true
         }
         .onDisappear {
             streamer.stop()
         }
     }
 
-
-    // MARK: - Expanded VNC Window
-
-    private func openExpandedVNCWindow() {
-        if expandedWindow != nil {
-            expandedWindow?.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let windowSize = CGSize(width: 800, height: 500)
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Second Self — Twin's Desktop"
-        window.backgroundColor = NSColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1.0)
-        window.isReleasedWhenClosed = false
-        window.center()
-
-        let hostingView = NSHostingView(
-            rootView: ExpandedVNCView(streamer: streamer)
-        )
-        window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
-        expandedWindow = window
-    }
-}
-
-// MARK: - Expanded VNC View
-
-struct ExpandedVNCView: View {
-    @ObservedObject var streamer: MJPEGStreamer
-
-    var body: some View {
-        Group {
-            if let image = streamer.currentFrame {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                VStack(spacing: 8) {
-                    Text("Connecting to Twin's desktop...")
-                        .font(.system(size: 14))
-                        .foregroundColor(Color.ssTextSecondary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.ssBackground)
+    private func launchTigerVNC() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-a", "TigerVNC", "--args", "localhost:5901"]
+        try? task.run()
     }
 }
 
