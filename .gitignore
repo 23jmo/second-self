@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 *.log
 *.err
+
+# Next.js
+.next/
+out/
+node_modules/
+npm-debug.log*
+.vercel

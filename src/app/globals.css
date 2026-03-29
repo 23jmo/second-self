@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #9CA161;
+  --color-primary-dark: #585B2E;
+  --radius-card: 15px;
+}
