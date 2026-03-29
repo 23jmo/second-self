@@ -107,7 +107,10 @@ enum SSEEventType: String {
 enum ServerConfig {
     static let orchestratorPort = 8420
     static let agentServerPort = 8421
+    static let backendPort = 8000
     static let orchestratorURL = "http://localhost:\(orchestratorPort)"
+    static let backendURL = "http://localhost:\(backendPort)"
     static let agentStreamURL = "http://localhost:\(agentServerPort)/stream"
     static let chatEndpoint = "\(orchestratorURL)/chat"
+    static let sessionEndpoint = "\(backendURL)/session/latest"
 }

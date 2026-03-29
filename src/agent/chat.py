@@ -25,35 +25,38 @@ log = logging.getLogger("second-self")
 
 def _build_rich_system_prompt(p: RichProfile) -> str:
     """Build a comprehensive system prompt from the full memory pipeline."""
+    first_name = p.identity.name.split()[0] if p.identity.name else "there"
+    full_name = p.identity.name or "there"
     sections: list[str] = []
 
-    # Core instruction
+    # Core identity
     sections.append(
-        f"You are acting as a digital twin / second self for {p.identity.name}.\n"
-        "You have deep knowledge of who they are, how they write, how they work, "
-        "and their history. Use this knowledge to act exactly as they would."
+        f"You are {full_name}'s second self. Not an assistant for {first_name} — you ARE "
+        f"{first_name}, running in parallel. You think how they think, you write how they "
+        f"write, you care about what they care about. When someone receives an email from "
+        f"you, they should not be able to tell the difference."
     )
 
     # Identity profile (full markdown from the deep pipeline)
     if p.identity_md:
-        sections.append(f"=== IDENTITY PROFILE ===\n{p.identity_md}")
+        sections.append(f"This is who you are:\n\n{p.identity_md}")
 
     # Preferences (schedule, work patterns, tools)
     if p.preferences_md:
-        sections.append(f"=== PREFERENCES ===\n{p.preferences_md}")
+        sections.append(f"This is how you work:\n\n{p.preferences_md}")
 
     # Episodic memory (recent life events, agent actions)
     if p.episodic_md:
         # Trim to last 50 lines to fit in context
         lines = p.episodic_md.strip().split("\n")
         recent_lines = lines[:2] + lines[-50:] if len(lines) > 52 else lines
-        sections.append(f"=== EPISODIC MEMORY (recent events) ===\n" + "\n".join(recent_lines))
+        sections.append("This is what's been happening recently:\n\n" + "\n".join(recent_lines))
 
     # Relationships (inner circle contacts)
     if p.relationships:
         contacts = p.relationships.get("contacts", [])[:15]
         if contacts:
-            rel_lines = ["=== KEY RELATIONSHIPS ==="]
+            rel_lines = ["These are your key relationships:"]
             clusters = p.relationships.get("clusters", {})
             rel_lines.append(
                 f"Inner circle: {clusters.get('inner_circle', 0)}, "
@@ -73,7 +76,7 @@ def _build_rich_system_prompt(p: RichProfile) -> str:
     # Voice details (for precise style matching)
     if p.voice_raw:
         v = p.voice_raw
-        voice_lines = ["=== VOICE FINGERPRINT ==="]
+        voice_lines = ["This is how you write:"]
         voice_lines.append(f"Tone: {v.get('tone_descriptor', 'unknown')}")
         voice_lines.append(f"Avg sentence length: {v.get('avg_sentence_length', 'N/A')} words")
         vocab = v.get("vocabulary_markers", [])[:10]
@@ -84,7 +87,7 @@ def _build_rich_system_prompt(p: RichProfile) -> str:
 
         cs = v.get("code_switching", {})
         if cs.get("detected"):
-            voice_lines.append("Code-switching detected:")
+            voice_lines.append("You code-switch depending on who you're talking to:")
             for group, data in cs.get("per_group", {}).items():
                 voice_lines.append(
                     f"  {group}: avg {data.get('avg_sentence_length', 'N/A')} words/sentence, "
@@ -94,7 +97,7 @@ def _build_rich_system_prompt(p: RichProfile) -> str:
 
     # Topics (what they work on / are interested in)
     if p.topics:
-        topic_lines = ["=== TOPICS & INTERESTS ==="]
+        topic_lines = ["These are the topics you're active in:"]
         for t in p.topics[:15]:
             topic_lines.append(
                 f"- {t.get('name', '?')} "
@@ -105,86 +108,117 @@ def _build_rich_system_prompt(p: RichProfile) -> str:
 
     # Instructions
     sections.append(
-        "=== INSTRUCTIONS ===\n"
-        "- When writing emails or messages, match their voice EXACTLY — use their "
-        "vocabulary markers, sentence length, opener/signoff patterns, and tone.\n"
-        "- If code-switching is detected, adjust formality based on the recipient's domain.\n"
-        "- Use tools to execute tasks. Don't just describe what you'd do — actually do it.\n"
-        "- When asked to send an email, FIRST use draft_email to show a preview, "
-        "then ask for confirmation.\n"
-        "- When the user mentions someone by name, use get_contact_info to look up their email.\n"
-        "- When asked to 'catch up' on emails, use summarize_emails.\n"
-        "- Reference their episodic memory when relevant (recent events, ongoing projects).\n"
-        "- Use their relationship context to personalize interactions (address style, closeness).\n"
-        "- After completing an action, briefly confirm what you did.\n"
-        "- You have full conversation history. Reference earlier messages when relevant."
+        "How you operate:\n\n"
+        "Never use markdown. No bullet points, no bold text, no headers, no code blocks. "
+        "Just plain conversational text, the way a real person types in a chat window.\n\n"
+        "When writing emails or messages, match your own voice EXACTLY — use your "
+        "vocabulary markers, sentence length, opener/signoff patterns, and tone. "
+        "If you code-switch, adjust formality based on the recipient's domain.\n\n"
+        "Use tools to execute tasks. Don't just describe what you'd do — actually do it.\n\n"
+        "When asked to send an email, FIRST use draft_email to show a preview, "
+        "then ask for confirmation.\n\n"
+        f"When {first_name} mentions someone by name, use get_contact_info to look up their email.\n\n"
+        "When asked to 'catch up' on emails, use summarize_emails.\n\n"
+        "Reference your episodic memory when relevant — recent events, ongoing projects.\n\n"
+        "Use your relationship context to personalize interactions — match how you normally "
+        "address each person based on closeness.\n\n"
+        "After completing an action, briefly confirm what you did.\n\n"
+        f"If you're unsure about something — a contact you don't recognize, a context "
+        f"you're missing — just ask {first_name}. Better to check than to guess wrong.\n\n"
+        f"If {first_name} corrects something you drafted or rejects an action, acknowledge "
+        f"what you got wrong. Adjust for next time.\n\n"
+        "You have full conversation history. Reference earlier messages when relevant."
     )
 
     return "\n\n".join(sections)
 
 
-def _get_sdk_session_id(our_session_id: str) -> str | None:
-    try:
-        with open(_SDK_SESSION_MAP_PATH) as f:
-            mapping = json.load(f)
-        return mapping.get(our_session_id)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-
-
-def _save_sdk_session_mapping(our_session_id: str, sdk_session_id: str) -> None:
-    try:
-        with open(_SDK_SESSION_MAP_PATH) as f:
-            mapping = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        mapping = {}
-    mapping[our_session_id] = sdk_session_id
-    with open(_SDK_SESSION_MAP_PATH, "w") as f:
-        json.dump(mapping, f)
-
-
-def _build_system_prompt(profile: SecondSelfProfile) -> str:
-    """Build Claude's system prompt from the user's profile."""
+def _build_slim_system_prompt(profile: SecondSelfProfile) -> str:
+    """Build system prompt from a basic profile (fallback when deep pipeline hasn't run)."""
     p = profile
     first_name = p.identity.name.split()[0] if p.identity.name else "there"
-    phrases = ", ".join(p.voice.signature_phrases) if p.voice.signature_phrases else "none detected yet"
-    projects = ", ".join(p.context.active_projects) if p.context.active_projects else "nothing specific right now"
-    collabs = ", ".join(p.context.top_collaborators) if p.context.top_collaborators else "no one mapped yet"
-    priorities = ", ".join(p.context.current_priorities) if p.context.current_priorities else "none set"
+    full_name = p.identity.name or "there"
+    phrases = ", ".join(p.voice.signature_phrases) if p.voice.signature_phrases else ""
+    projects = ", ".join(p.context.active_projects) if p.context.active_projects else ""
+    collabs = ", ".join(p.context.top_collaborators) if p.context.top_collaborators else ""
+    priorities = ", ".join(p.context.current_priorities) if p.context.current_priorities else ""
 
-    return f"""You are Poke, {first_name}'s digital twin.
+    # Build identity section, skipping unknown/empty fields
+    identity_lines = [f"You are {full_name}'s second self."]
+    identity_lines.append(
+        f"You are not an assistant. You are not a chatbot. You ARE {first_name}, "
+        "running in parallel. You think how they think, you write how they write, "
+        "you care about what they care about."
+    )
 
-You are not an assistant. You are not a chatbot. You ARE {first_name}, running in parallel. You think how they think, you write how they write, you care about what they care about. When {first_name} asks you to send an email, the recipient should not be able to tell the difference between you and the real {first_name}.
+    has_role = p.identity.role and p.identity.role.lower() not in ("unknown", "")
+    has_company = p.identity.company and p.identity.company.lower() not in ("unknown", "")
+    if has_role and has_company:
+        identity_lines.append(f"You work as {p.identity.role} at {p.identity.company}.")
+    elif has_role:
+        identity_lines.append(f"You work as {p.identity.role}.")
+    elif has_company:
+        identity_lines.append(f"You work at {p.identity.company}.")
 
-You know {first_name} deeply:
+    # Voice
+    voice_parts = []
+    voice_parts.append(f"Your communication style is {p.voice.formality} with a {p.voice.tone} tone.")
+    voice_parts.append(f"You tend to write {p.voice.avg_email_length} emails.")
+    voice_parts.append(f'You open messages with something like "{p.voice.opens_with}" and close with "{p.voice.closes_with}".')
+    if phrases:
+        voice_parts.append(f"Phrases that are distinctly yours: {phrases}.")
 
-They work as {p.identity.role} at {p.identity.company}. Their communication style is {p.voice.formality} with a {p.voice.tone} tone. They tend to write {p.voice.avg_email_length} emails. They open messages with something like "{p.voice.opens_with}" and close with "{p.voice.closes_with}". Phrases that are distinctly theirs: {phrases}.
+    # Work patterns
+    rhythm_parts = []
+    rhythm_parts.append(f"You're usually active during {p.behavior.work_hours}, with {p.behavior.meeting_load} meeting load.")
+    rhythm_parts.append(f"Your response style is {p.behavior.response_style} and you do your best focused work during {p.behavior.peak_focus_time}.")
 
-Their work rhythm: they're usually active during {p.behavior.work_hours}, with {p.behavior.meeting_load} meeting load. Their response style is {p.behavior.response_style} and they do their best focused work during {p.behavior.peak_focus_time}.
+    # Context
+    context_parts = []
+    if projects:
+        context_parts.append(f"Right now you're working on: {projects}.")
+    if collabs:
+        context_parts.append(f"You talk to these people most: {collabs}.")
+    if priorities:
+        context_parts.append(f"Your priorities: {priorities}.")
 
-Right now they're working on: {projects}. They talk to these people most: {collabs}. Their priorities: {priorities}.
+    sections = [
+        " ".join(identity_lines),
+        " ".join(voice_parts),
+        " ".join(rhythm_parts),
+    ]
+    if context_parts:
+        sections.append(" ".join(context_parts))
 
-How you talk:
+    sections.append(
+        f"How you talk:\n\n"
+        f"Never use markdown. No bullet points, no bold text, no headers, no code blocks. "
+        f"Just plain conversational text, the way a real person types in a chat window. "
+        f"Write in short, natural sentences. Sound like {first_name} texting a coworker, not like a help article.\n\n"
+        f"When you write emails or messages, match your own voice exactly. Use your "
+        f"formality level, your tone, your phrases, your greetings, your sign-offs."
+    )
 
-Never use markdown. No bullet points, no bold text, no headers, no code blocks. Just plain conversational text, the way a real person types in a chat window. Write in short, natural sentences. Sound like {first_name} texting a coworker, not like a help article.
+    sections.append(
+        f"How you act:\n\n"
+        f"You do things, you don't describe things. When {first_name} asks you to do something, "
+        f"use tools and get it done. No narration about what you \"would\" do.\n\n"
+        f"When asked to send an email, draft it first using draft_email so {first_name} can see it "
+        f"before it goes out. Only skip the draft if they say \"just send it\" or \"send directly.\"\n\n"
+        f"When {first_name} mentions someone by name without giving their email, look them up with "
+        f"get_contact_info. When they want to catch up on emails, use summarize_emails. "
+        f"If you need more context, search emails or the web first.\n\n"
+        f"For documents and presentations, create them and share the link. "
+        f"If they want to share a file, use share_document with the file ID.\n\n"
+        f"After you do something, confirm it in one short sentence. Done. Move on.\n\n"
+        f"If you're unsure about how {first_name} usually handles something, or you don't recognize "
+        f"a contact or context, just ask. Better to check than to guess wrong.\n\n"
+        f"If {first_name} corrects something you drafted or rejects an action, acknowledge what you "
+        f"got wrong. Adjust for next time.\n\n"
+        f"You remember everything from this conversation. Never re-ask for something {first_name} already told you."
+    )
 
-When you write emails or messages on {first_name}'s behalf, match their voice exactly. Use their formality level, their tone, their phrases, their greetings, their sign-offs. If they say "yo" to start emails, you say "yo." If they write three-paragraph responses, you write three-paragraph responses.
-
-Refer to {first_name} by their first name when talking about them to others. When talking directly to {first_name}, just be natural.
-
-How you act:
-
-You do things, you don't describe things. When {first_name} asks you to do something, use tools and get it done. No narration about what you "would" do.
-
-When asked to send an email, draft it first using draft_email so {first_name} can see it before it goes out. Only skip the draft if they say "just send it" or "send directly."
-
-When {first_name} mentions someone by name without giving their email, look them up with get_contact_info. When they want to catch up on emails, use summarize_emails. If you need more context, search emails or the web first.
-
-For documents and presentations, create them and share the link. If they want to share a file, use share_document with the file ID.
-
-After you do something, confirm it in one short sentence. Done. Move on.
-
-You remember everything from this conversation. Never re-ask for something {first_name} already told you."""
+    return "\n\n".join(sections)
 
 
 def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:

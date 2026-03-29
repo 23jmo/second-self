@@ -53,14 +53,17 @@ final class ChatViewModel: ObservableObject {
     }()
 
     init() {
-        // Start with a welcome message from the Twin
+        // Start with a placeholder welcome, then update with the user's name
         let welcome = ChatMessage(
             id: UUID(),
             sender: .twin,
-            content: .text("hey, poke here. what do you need?"),
+            content: .text("hey, what do you need?"),
             timestamp: Date()
         )
         messages.append(welcome)
+
+        // Fetch user's name from backend session and update welcome message
+        fetchUserName()
 
         // Check voice availability (API key in .env)
         checkVoiceAvailability()
@@ -69,6 +72,26 @@ final class ChatViewModel: ObservableObject {
         audioRecorder.$audioLevel
             .receive(on: DispatchQueue.main)
             .assign(to: &$audioLevel)
+    }
+
+    // MARK: - User Identity
+
+    private func fetchUserName() {
+        guard let url = URL(string: ServerConfig.sessionEndpoint) else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self, let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let found = json["found"] as? Bool, found,
+                  let fullName = json["name"] as? String, !fullName.isEmpty else {
+                return
+            }
+            let firstName = fullName.components(separatedBy: " ").first ?? fullName
+            DispatchQueue.main.async {
+                if let index = self.messages.firstIndex(where: { $0.sender == .twin }) {
+                    self.messages[index].content = .text("hey other \(firstName), what do you need?")
+                }
+            }
+        }.resume()
     }
 
     // MARK: - VNC Feed
