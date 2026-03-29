@@ -6,10 +6,29 @@ and routes tool calls to the implementation functions in tools.py.
 
 import asyncio
 import base64
+import logging
 from email.mime.text import MIMEText
 from typing import Any
 
 from src.connectors.tavily import search_user
+
+log = logging.getLogger("second-self")
+
+# ---------------------------------------------------------------------------
+# Scheduler reference (set by server lifespan)
+# ---------------------------------------------------------------------------
+
+_scheduler_ref = None
+
+
+def set_scheduler_ref(scheduler) -> None:
+    """Store a reference to the BackgroundScheduler for live job registration."""
+    global _scheduler_ref
+    _scheduler_ref = scheduler
+
+
+def _get_scheduler():
+    return _scheduler_ref
 
 # ---------------------------------------------------------------------------
 # Tool definitions (Anthropic Messages API format)
@@ -234,6 +253,73 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "create_automation",
+        "description": (
+            "Create a recurring automation for the user. Use when they ask to schedule "
+            "something to happen regularly (e.g. 'every Monday email the team a standup', "
+            "'at 5pm daily summarize my emails'). Parses the request into a structured spec "
+            "and saves it. Returns a confirmation message or a clarifying question."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_request": {
+                    "type": "string",
+                    "description": "The user's natural language automation request, exactly as they phrased it",
+                },
+            },
+            "required": ["user_request"],
+        },
+    },
+    {
+        "name": "manage_automations",
+        "description": (
+            "Manage the user's existing automations: pause, resume, edit, delete, or run "
+            "one immediately. Use when they ask to change, stop, restart, test, or remove "
+            "an automation. Also use for 'run my standup now' or 'fire that automation'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_request": {
+                    "type": "string",
+                    "description": "The user's natural language management request",
+                },
+            },
+            "required": ["user_request"],
+        },
+    },
+    {
+        "name": "list_automations",
+        "description": (
+            "List all of the user's automations with their status, schedule, and run count. "
+            "Use when the user asks 'what automations do I have', 'show my scheduled tasks', "
+            "or 'list my recurring actions'. This is a fast read-only operation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "run_automation",
+        "description": (
+            "Run a saved automation immediately by name. Use when the user types "
+            "'/automation [name]' or asks to 'run [automation name] now'. Looks up the "
+            "automation by name and executes it on the spot."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name or partial name of the automation to run",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -290,8 +376,22 @@ async def dispatch_tool(
     name: str,
     args: dict[str, Any],
     access_token: str | None,
+    uid: str = "",
 ) -> str:
     """Execute a tool by name and return a string result."""
+
+    # --- Automation tools (no Google token needed) ---
+    if name == "create_automation":
+        return await _create_automation_handler(uid, args.get("user_request", ""))
+
+    if name == "manage_automations":
+        return await _manage_automations_handler(uid, args.get("user_request", ""))
+
+    if name == "list_automations":
+        return _list_automations_handler(uid)
+
+    if name == "run_automation":
+        return await _run_automation_handler(uid, args.get("name", ""), access_token)
 
     if name == "search_web":
         return await search_user(args["query"])
@@ -627,3 +727,126 @@ async def _share_document(
         file_meta = drive.files().get(fileId=file_id, fields="name,webViewLink").execute()
         return f"Shared '{file_meta.get('name', file_id)}' with {email} as {role}. Link: {file_meta.get('webViewLink', '')}"
     return await asyncio.to_thread(_share)
+
+
+# ---------------------------------------------------------------------------
+# Automation tool handlers
+# ---------------------------------------------------------------------------
+
+async def _create_automation_handler(uid: str, user_request: str) -> str:
+    """Parse and save a new automation from natural language."""
+    if not uid:
+        return "Error: You must be signed in to create automations."
+
+    from agents.automation_parser import parse_automation
+    from utils.automation_store import save_automation
+    from utils.firebase_context import load_user_context
+
+    user_context = load_user_context(uid)
+    spec = await parse_automation(user_request, user_context)
+
+    if spec.get("clarification_needed"):
+        return spec["clarification_needed"]
+
+    try:
+        auto_id = save_automation(uid, spec, source_message=user_request)
+    except (RuntimeError, ValueError) as exc:
+        return f"Error saving automation: {exc}"
+
+    # Register with scheduler if running
+    try:
+        from daemons.automation_scheduler import register_automation
+        scheduler = _get_scheduler()
+        if scheduler:
+            spec_with_id = {**spec, "id": auto_id, "enabled": True}
+            register_automation(scheduler, uid, spec_with_id, user_context)
+    except Exception as exc:
+        log.warning("Scheduler registration failed for %s: %s", auto_id, exc)
+
+    confirmation = spec.get("confirmation_message", f"Automation '{spec.get('name')}' created.")
+    trigger = spec.get("trigger", {})
+    schedule_str = trigger.get("human_readable", trigger.get("cron", ""))
+    return f"{confirmation}\n\nAutomation ID: {auto_id}\nSchedule: {schedule_str}"
+
+
+async def _manage_automations_handler(uid: str, user_request: str) -> str:
+    """Route management requests to the automation manager."""
+    if not uid:
+        return "Error: You must be signed in to manage automations."
+
+    from agents.automation_manager import handle_manage_request, set_scheduler
+    from utils.firebase_context import load_user_context
+
+    scheduler = _get_scheduler()
+    if scheduler:
+        set_scheduler(scheduler)
+
+    user_context = load_user_context(uid)
+    return await handle_manage_request(uid, user_request, user_context)
+
+
+def _list_automations_handler(uid: str) -> str:
+    """List all automations for the user (no LLM call)."""
+    if not uid:
+        return "Error: You must be signed in to view automations."
+
+    from utils.automation_store import get_all_automations
+
+    automations = get_all_automations(uid, enabled_only=False)
+    if not automations:
+        return "You don't have any automations set up yet. Ask me to create one!"
+
+    lines = [f"You have {len(automations)} automation(s):\n"]
+    for a in automations:
+        trigger = a.get("trigger", {})
+        action = a.get("action", {})
+        status = "active" if a.get("enabled") else "paused"
+        schedule = trigger.get("human_readable") or trigger.get("cron", "?")
+        fn = action.get("function", "?")
+        to = action.get("params", {}).get("to", "")
+        to_str = f" -> {to}" if to else ""
+        runs = a.get("run_count", 0)
+        lines.append(
+            f"  {a.get('id')} | {a.get('name')} [{status}]\n"
+            f"    Schedule: {schedule} | Action: {fn}{to_str} | Runs: {runs}"
+        )
+    return "\n".join(lines)
+
+
+async def _run_automation_handler(uid: str, name_query: str, access_token: str | None) -> str:
+    """Look up an automation by name and execute it immediately."""
+    if not uid:
+        return "Error: You must be signed in to run automations."
+
+    if not name_query:
+        return "Error: Please provide the name of the automation to run."
+
+    from utils.automation_store import find_by_name
+    from utils.firebase_context import load_user_context
+    from agents.automation_executor import execute_automation
+
+    matches = find_by_name(uid, name_query)
+    if not matches:
+        return f"No automation found matching '{name_query}'. Use list_automations to see your automations."
+
+    if len(matches) > 1:
+        names = ", ".join(f"'{m.get('name')}'" for m in matches[:5])
+        return f"Multiple automations match '{name_query}': {names}. Please be more specific."
+
+    auto = matches[0]
+    auto_id = auto.get("id", "")
+    auto_name = auto.get("name", auto_id)
+
+    user_context = load_user_context(uid)
+    log.info("Running automation '%s' (%s) on demand", auto_name, auto_id)
+
+    result = await execute_automation(uid, auto_id, user_context)
+
+    status = result.get("status", "unknown")
+    summary = result.get("summary", "")
+    error = result.get("error")
+
+    if status == "error":
+        return f"Automation '{auto_name}' failed: {error or summary}"
+
+    return f"Ran '{auto_name}' — {summary[:300] if summary else status}"
