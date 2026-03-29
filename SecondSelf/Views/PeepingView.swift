@@ -167,14 +167,14 @@ private struct MouthShape: Shape {
 
 // MARK: - Dangling Mascot (Pose #2 asset)
 
-/// Uses the TwinPose2 image asset (arms raised, as if gripping the notch edge).
+/// Uses the TwinDangle image asset (arms raised, as if gripping the notch edge).
 /// Subtle swing + breathing animation to feel alive.
 struct DanglingMascotView: View {
     @State private var swingAngle: Double = 0
     @State private var breatheScale: CGFloat = 1.0
 
     var body: some View {
-        Image("TwinPose2")
+        Image("TwinDangle")
             .resizable()
             .aspectRatio(contentMode: .fit)
             .scaleEffect(breatheScale)

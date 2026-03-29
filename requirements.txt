@@ -11,6 +11,7 @@ anthropic
 claude-agent-sdk
 python-dotenv
 pydantic
+firebase-admin
 beautifulsoup4
 tavily-python
 filelock

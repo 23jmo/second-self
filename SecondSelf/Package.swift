@@ -15,7 +15,7 @@ let package = Package(
             name: "SecondSelf",
             dependencies: ["DynamicNotchKit"],
             path: ".",
-            exclude: ["Info.plist", "Package.swift", "Tests"],
+            exclude: ["Info.plist", "Package.swift", "Tests", "SecondSelf.entitlements"],
             resources: [
                 .process("Assets.xcassets"),
                 .copy("Resources")

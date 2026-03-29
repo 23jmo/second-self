@@ -108,6 +108,24 @@ if [ -d "$PYTHON_DIR" ]; then
     echo "    Copying embedded Python..."
     mkdir -p "$SHARE_DIR/python"
     rsync -a "$PYTHON_DIR/" "$SHARE_DIR/python/"
+
+    # Sign all Python binaries for notarization
+    if [ "$SKIP_SIGN" = false ] && [ -n "$SIGN_IDENTITY" ]; then
+        echo "==> Signing embedded Python binaries..."
+        # Sign all .so and .dylib files (native extensions)
+        find "$SHARE_DIR/python" \( -name '*.so' -o -name '*.dylib' \) -type f | while read -r lib; do
+            codesign --force --options runtime --timestamp \
+                --sign "$SIGN_IDENTITY" "$lib" 2>/dev/null || true
+        done
+        # Sign the Python binary itself
+        PYTHON_BIN="$SHARE_DIR/python/bin/python3.11"
+        if [ -f "$PYTHON_BIN" ]; then
+            codesign --force --options runtime --timestamp \
+                --entitlements "$REPO_DIR/SecondSelf/SecondSelf.entitlements" \
+                --sign "$SIGN_IDENTITY" "$PYTHON_BIN"
+        fi
+        echo "    Python binaries signed"
+    fi
 else
     echo "    WARNING: No standalone Python found — PKG will require system Python"
 fi
@@ -247,7 +265,7 @@ pkgbuild \
 
 # Wrap with productbuild for signing support
 if [ "$SKIP_SIGN" = false ]; then
-    INSTALLER_IDENTITY=$(security find-identity -v -p basic | grep "Developer ID Installer" | head -1 | sed 's/.*"\(.*\)"/\1/')
+    INSTALLER_IDENTITY=$(security find-identity -v -p basic | grep "Developer ID Installer" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)
     if [ -n "$INSTALLER_IDENTITY" ]; then
         echo "==> Signing PKG with: $INSTALLER_IDENTITY"
         productbuild \

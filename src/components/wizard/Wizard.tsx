@@ -7,7 +7,7 @@ import NameInputScreen from "./NameInputScreen";
 import BuildingScreen from "./BuildingScreen";
 import ProfileScreen from "./ProfileScreen";
 import CompleteScreen from "./CompleteScreen";
-import ChatScreen from "./ChatScreen";
+
 
 const fadeVariants = {
   initial: { opacity: 0 },
@@ -31,8 +31,7 @@ export default function Wizard() {
       onProfile={setProfile}
     />,
     <ProfileScreen key="profile" name={state.name} role={state.role} profile={state.profile} onNext={next} onBack={back} />,
-    <CompleteScreen key="complete" name={state.name} onNext={next} onBack={back} />,
-    <ChatScreen key="chat" sessionId={state.sessionId} name={state.name} />,
+    <CompleteScreen key="complete" name={state.name} onBack={back} />,
   ];
 
   return (

@@ -49,6 +49,10 @@ Thumbs.db
 xcuserdata/
 DerivedData/
 
+# Build artifacts
+build/
+tsconfig.tsbuildinfo
+
 # Next.js
 .next/
 out/

@@ -240,8 +240,8 @@ final class NotchOverlayController: NSObject {
     private func notchHitRect() -> NSRect {
         guard let screen = NSScreen.main else { return .zero }
         let base = Self.screenNotchFrame(screen)
-        // Pad to include compact leading/trailing content flanking the notch
-        return base.insetBy(dx: -40, dy: -4)
+        // Generous padding so mascot triggers when cursor is near, not just on top
+        return base.insetBy(dx: -80, dy: -60)
     }
 
     /// The expanded content hit rect: notch area extended downward by the content height.
@@ -350,6 +350,7 @@ final class NotchOverlayController: NSObject {
         guard chatViewModel.expansionStage == 0 else { return }
         let notchRect = notchHitRect()
         let isInNotchArea = notchRect.contains(mouseLocation)
+        if isInNotchArea { print("[HOVER] in notch area, peepingVisible=\(peepingVisible) mouse=\(mouseLocation)") }
 
         if isInNotchArea {
             if !peepingVisible {
@@ -362,24 +363,26 @@ final class NotchOverlayController: NSObject {
         }
     }
 
-    /// Smoothly slide the peeping window's X to follow the cursor.
+    /// Smoothly lean the peeping mascot toward the cursor (dampened, not 1:1).
     private func updatePeepingX(cursorX: CGFloat) {
         guard let window = peepingWindow, let screen = NSScreen.main else { return }
         let notchFrame = Self.screenNotchFrame(screen)
         let mascotWidth: CGFloat = 80
+        let visibleY = notchFrame.minY - 30
 
-        // Clamp X so the mascot stays within the notch width
-        let minX = notchFrame.minX
-        let maxX = notchFrame.maxX - mascotWidth
-        let targetX = (cursorX - mascotWidth / 2).clampedTo(min: minX, max: maxX)
+        // Lerp 30% toward cursor from center — leans, doesn't follow
+        let centerX = notchFrame.midX - mascotWidth / 2
+        let fullX = cursorX - mascotWidth / 2
+        let targetX = (centerX + (fullX - centerX) * 0.3)
+            .clampedTo(min: notchFrame.minX, max: notchFrame.maxX - mascotWidth)
 
-        // Lightweight animation — just reposition X, no alpha change
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            var frame = window.frame
-            frame.origin.x = targetX
-            window.animator().setFrame(frame, display: false)
+            context.duration = 0.45
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
+            window.animator().setFrame(
+                NSRect(x: targetX, y: visibleY, width: mascotWidth, height: peepMascotHeight),
+                display: true
+            )
         }
     }
 
@@ -392,14 +395,15 @@ final class NotchOverlayController: NSObject {
         let hiddenY = notchFrame.minY
         let visibleY = notchFrame.minY - 30
 
-        // Use cursor X if provided, otherwise center
-        let minX = notchFrame.minX
-        let maxX = notchFrame.maxX - mascotWidth
+        // Dampen cursor influence — lean 30% toward cursor from center
+        let centerX = notchFrame.midX - mascotWidth / 2
         let xPosition: CGFloat
         if let cx = cursorX {
-            xPosition = (cx - mascotWidth / 2).clampedTo(min: minX, max: maxX)
+            let fullX = cx - mascotWidth / 2
+            xPosition = (centerX + (fullX - centerX) * 0.3)
+                .clampedTo(min: notchFrame.minX, max: notchFrame.maxX - mascotWidth)
         } else {
-            xPosition = notchFrame.midX - mascotWidth / 2
+            xPosition = centerX
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -474,15 +478,21 @@ final class NotchOverlayController: NSObject {
 
     private func setDanglingVisible(_ visible: Bool) {
         danglingVisible = visible
-        guard let window = danglingWindow, let screen = NSScreen.main else { return }
+        guard let window = danglingWindow, let screen = NSScreen.main else {
+            print("[DANGLE] guard failed: window=\(danglingWindow != nil) screen=\(NSScreen.main != nil)")
+            return
+        }
 
         let notchFrame = Self.screenNotchFrame(screen)
 
         // Position at right edge of the medium notch bar (360pt wide, centered)
+        // Hands should touch the bottom of the notch bar — so top of mascot aligns with bar bottom
         let xPosition = notchFrame.midX + 180 - dangleWidth + 5
         let barBottom = notchFrame.minY
         let visibleY = barBottom - dangleHeight + 8
         let hiddenY = barBottom
+
+        print("[DANGLE] visible=\(visible) notch=\(notchFrame) barBottom=\(barBottom) visibleY=\(visibleY) x=\(xPosition) level=\(window.level.rawValue)")
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.4
