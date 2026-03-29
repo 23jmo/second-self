@@ -91,6 +91,10 @@ enum SSEEventType: String {
     case toolResult = "tool_result"
     case error
     case ping
+    case component
+    case componentStart = "component_start"
+    case componentDelta = "component_delta"
+    case componentEnd = "component_end"
 }
 
 enum ServerConfig {

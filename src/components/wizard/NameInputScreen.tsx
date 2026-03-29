@@ -21,9 +21,8 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
   const nameTagVisible = name.trim().length > 0;
 
   const handleSubmit = () => {
-    if (isValid) {
-      onSubmit(name.trim(), role.trim());
-    }
+    if (!isValid) return;
+    onSubmit(name.trim(), role.trim());
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -31,30 +30,25 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
   };
 
   // --- Eye direction state machine ---
-  // Priority: typing > name tag > mouse (undefined = mouse fallback)
   let lookX: number | undefined;
   let lookY: number | undefined;
 
   if (focused === "name") {
-    // Reading the name input — sweep left to right
     const progress = Math.min(name.length / 20, 1);
     lookX = -0.6 + progress * 1.2;
     lookY = 0.5;
   } else if (focused === "role") {
-    // Reading the role input — further down
     const progress = Math.min(role.length / 25, 1);
     lookX = -0.6 + progress * 1.2;
     lookY = 0.8;
   } else if (nameTagVisible) {
-    // Not typing, but name tag is floating above — look way up at it
     lookX = 0;
     lookY = -1;
   }
-  // else: undefined → MascotFace falls back to mouse tracking
 
   return (
     <div className="flex flex-col items-center w-full max-w-[615px] px-4" onKeyDown={handleKeyDown}>
-      {/* Name tag above mascot — floats in when name has content */}
+      {/* Name tag above mascot */}
       <div className="h-10 sm:h-12 flex items-end justify-center">
         <AnimatePresence>
           {nameTagVisible && (
@@ -82,11 +76,7 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
           WebkitMaskImage: "linear-gradient(to bottom, black 30%, black 55%, transparent 90%)",
         }}
       >
-        <MascotFace
-          className="w-full"
-          lookX={lookX}
-          lookY={lookY}
-        />
+        <MascotFace className="w-full" lookX={lookX} lookY={lookY} />
       </div>
 
       {/* Content */}

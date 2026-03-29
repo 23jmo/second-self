@@ -1,28 +1,48 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import MascotFace from "@/components/mascot/MascotFace";
+import { postOnboard } from "@/lib/api";
+import type { SecondSelfProfile } from "@/lib/api";
 
 const STEPS = [
   "searching web presence",
   "analyzing communication style",
   "mapping tools & workflows",
   "building voice profile",
-  "initializing second session",
+  "initializing second self",
 ];
 
 interface BuildingScreenProps {
+  name: string;
+  role: string;
+  email: string;
+  sessionId: string;
   onComplete: () => void;
+  onProfile: (profile: SecondSelfProfile) => void;
 }
 
-export default function BuildingScreen({ onComplete }: BuildingScreenProps) {
+export default function BuildingScreen({
+  name,
+  role,
+  email,
+  sessionId,
+  onComplete,
+  onProfile,
+}: BuildingScreenProps) {
   const [activeStep, setActiveStep] = useState(0);
+  const [error, setError] = useState("");
+  const apiDone = useRef(false);
+  const profileRef = useRef<SecondSelfProfile | null>(null);
 
+  // Animate steps on a timer (one per second)
   useEffect(() => {
     const interval = setInterval(() => {
       setActiveStep((prev) => {
-        if (prev >= STEPS.length - 1) {
-          clearInterval(interval);
+        // Don't go past the second-to-last step until API is done
+        const limit = apiDone.current ? STEPS.length - 1 : STEPS.length - 2;
+        if (prev >= limit) {
+          if (prev >= STEPS.length - 1) clearInterval(interval);
           return prev;
         }
         return prev + 1;
@@ -32,8 +52,33 @@ export default function BuildingScreen({ onComplete }: BuildingScreenProps) {
     return () => clearInterval(interval);
   }, []);
 
+  // Call /onboard on mount
   useEffect(() => {
-    if (activeStep >= STEPS.length - 1) {
+    let cancelled = false;
+
+    async function run() {
+      try {
+        const resp = await postOnboard(name, email, role, sessionId);
+        if (cancelled) return;
+        apiDone.current = true;
+        profileRef.current = resp.profile;
+        onProfile(resp.profile);
+        // Jump to final step
+        setActiveStep(STEPS.length - 1);
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Onboard failed:", err);
+        setError(err instanceof Error ? err.message : "Something went wrong.");
+      }
+    }
+
+    run();
+    return () => { cancelled = true; };
+  }, [name, email, role, sessionId, onProfile]);
+
+  // Advance to next screen once we hit the last step
+  useEffect(() => {
+    if (activeStep >= STEPS.length - 1 && apiDone.current) {
       const timeout = setTimeout(onComplete, 1200);
       return () => clearTimeout(timeout);
     }
@@ -71,6 +116,10 @@ export default function BuildingScreen({ onComplete }: BuildingScreenProps) {
             </li>
           ))}
         </ul>
+
+        {error && (
+          <p className="text-red-500 text-sm text-center">{error}</p>
+        )}
       </div>
     </div>
   );
