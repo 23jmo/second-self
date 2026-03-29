@@ -66,6 +66,11 @@ app.include_router(auth_router)
 
 # --- Endpoints ---
 
+@app.get("/")
+async def root():
+    return {"name": "Second Self API", "version": "0.3.0", "status": "ok"}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
