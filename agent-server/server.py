@@ -255,7 +255,8 @@ def main():
         raise
     print(f"[agent-server] Starting on port {PORT}")
 
-    # Verify browser-use CLI is available
+    # Clear any stale browser-use session, then verify CLI is available
+    run_browser("close", timeout=5)
     bu_check = run_browser("doctor", timeout=10)
     if bu_check.get("status") == "error":
         print(f"[agent-server] WARNING: browser-use not available: {bu_check.get('error', bu_check.get('stderr', 'unknown'))}")
