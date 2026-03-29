@@ -114,10 +114,17 @@ struct ExpandedNotchContent: View {
             ChatInputBar(
                 text: $chatViewModel.inputText,
                 isEnabled: chatViewModel.twinState != .thinking && chatViewModel.twinState != .working,
-                onSend: { text in chatViewModel.sendMessage(text: text) }
+                voiceState: chatViewModel.voiceState,
+                audioLevel: chatViewModel.audioLevel,
+                onSend: { text in chatViewModel.sendMessage(text: text) },
+                onTapToRecord: { chatViewModel.startRecording() },
+                onTapToStop: { chatViewModel.stopRecording() },
+                onVoiceCancel: { chatViewModel.cancelVoiceRecording() },
+                onPermissionTap: { chatViewModel.requestMicPermission() }
             )
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
+            .onAppear { chatViewModel.checkMicPermission() }
         }
         .frame(width: 420, height: 560)
         .background(Color.ssNotchBlack)

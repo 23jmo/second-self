@@ -23,6 +23,7 @@ extension Color {
     static let ssCream         = Color(hex: 0xFBFFD4)  // Timestamps, tool call pill bg
     static let ssToolBorder    = Color(hex: 0xAFB478)  // Tool call pill border
     static let ssInputBg       = Color(hex: 0x333338)  // Input bar background (brighter for contrast)
+    static let ssRecordingRed  = Color(hex: 0xFF453A)  // Voice recording active indicator
 }
 
 extension NSColor {
@@ -65,6 +66,8 @@ extension Animation {
     static let ssContentDismiss = Animation.easeOut(duration: 0.5)
     /// LIVE indicator blink
     static let ssLiveBlink = Animation.easeInOut(duration: 1.0)
+    /// Voice recording pulse: scale + opacity loop
+    static let ssRecordingPulse = Animation.easeInOut(duration: 0.6).repeatForever(autoreverses: true)
 }
 
 // MARK: - Transition Tokens
