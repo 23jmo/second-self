@@ -11,6 +11,7 @@ struct ExpandedNotchContent: View {
     // Medium expansion: cycling status text
     @State private var currentWordIndex = 0
     @State private var dotPulsePhase = false
+    @State private var showSignOutConfirm = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -180,6 +181,7 @@ struct ExpandedNotchContent: View {
     // MARK: - Stage 2: Full Chat (matches Figma 136:996)
 
     private var fullChatContent: some View {
+        ZStack(alignment: .topTrailing) {
         VStack(spacing: 0) {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
@@ -222,6 +224,33 @@ struct ExpandedNotchContent: View {
         }
         .frame(width: 420, height: 560)
         .background(Color.ssNotchBlack)
+
+            // Sign out button — top right overlay
+            if showSignOutConfirm {
+                Button(action: {
+                    authManager.signOut()
+                    showSignOutConfirm = false
+                }) {
+                    Text("Sign out?")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Color.ssError)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 28)
+                .padding(.trailing, 16)
+                .transition(.opacity)
+            } else {
+                Button(action: { withAnimation(.ssMicro) { showSignOutConfirm = true } }) {
+                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.25))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 28)
+                .padding(.trailing, 16)
+            }
+        } // ZStack
+        .animation(.ssMicro, value: showSignOutConfirm)
     }
 
     // MARK: - Medium Expansion Helpers

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Second Self — Sign In</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .container {
+      text-align: center;
+      max-width: 400px;
+      padding: 2rem;
+    }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
+    p { color: #888; margin-bottom: 2rem; }
+    #signin-btn {
+      background: #4285f4;
+      color: white;
+      border: none;
+      padding: 12px 32px;
+      font-size: 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #signin-btn:hover { background: #3367d6; }
+    #signin-btn:disabled { background: #555; cursor: not-allowed; }
+    #status { margin-top: 1.5rem; color: #888; min-height: 1.5rem; }
+    .error { color: #e74c3c; }
+    .success { color: #2ecc71; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Second Self</h1>
+    <p>Sign in with Google to build your digital twin.</p>
+    <button id="signin-btn" onclick="signIn()">Sign in with Google</button>
+    <div id="status"></div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+    import {
+      getAuth,
+      signInWithPopup,
+      signInWithRedirect,
+      getRedirectResult,
+      GoogleAuthProvider,
+    } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
+
+    const configResp = await fetch("/auth/firebase-config");
+    const firebaseConfig = await configResp.json();
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    const provider = new GoogleAuthProvider();
+    provider.addScope("https://www.googleapis.com/auth/gmail.readonly");
+    provider.addScope("https://www.googleapis.com/auth/gmail.send");
+    provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
+    provider.addScope("https://www.googleapis.com/auth/calendar.events");
+    provider.addScope("https://www.googleapis.com/auth/documents");
+    provider.addScope("https://www.googleapis.com/auth/presentations");
+    provider.addScope("https://www.googleapis.com/auth/drive.file");
+
+    // Check if returning from a redirect
+    try {
+      const result = await getRedirectResult(auth);
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        const googleAccessToken = credential.accessToken;
+        const idToken = await result.user.getIdToken();
+        const email = result.user.email;
+        const name = result.user.displayName || email;
+
+        document.getElementById("status").textContent = "Signed in! Saving session...";
+
+        const resp = await fetch("/auth/callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id_token: idToken,
+            google_access_token: googleAccessToken,
+            email: email,
+            name: name,
+          }),
+        });
+
+        if (!resp.ok) throw new Error(await resp.text());
+
+        document.getElementById("status").textContent = `Authenticated as ${name}. You can close this window.`;
+        document.getElementById("status").className = "success";
+        document.getElementById("signin-btn").style.display = "none";
+      }
+    } catch (err) {
+      console.error("Redirect result error:", err);
+    }
+
+    window.signIn = async function () {
+      const btn = document.getElementById("signin-btn");
+      const status = document.getElementById("status");
+      btn.disabled = true;
+      status.textContent = "Opening Google sign-in...";
+      status.className = "";
+
+      try {
+        // Try popup first (works in regular browsers)
+        const result = await signInWithPopup(auth, provider);
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        const googleAccessToken = credential.accessToken;
+        const idToken = await result.user.getIdToken();
+        const email = result.user.email;
+        const name = result.user.displayName || email;
+
+        status.textContent = "Signed in! Saving session...";
+
+        const resp = await fetch("/auth/callback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id_token: idToken,
+            google_access_token: googleAccessToken,
+            email: email,
+            name: name,
+          }),
+        });
+
+        if (!resp.ok) throw new Error(await resp.text());
+
+        status.textContent = `Authenticated as ${name}. You can close this window.`;
+        status.className = "success";
+      } catch (err) {
+        // Popup blocked — fall back to redirect
+        if (err.code === "auth/popup-blocked" || err.code === "auth/popup-closed-by-user") {
+          status.textContent = "Redirecting to Google...";
+          await signInWithRedirect(auth, provider);
+          return;
+        }
+        console.error(err);
+        status.textContent = `Error: ${err.message}`;
+        status.className = "error";
+        btn.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

@@ -19,7 +19,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from fastapi import FastAPI, Cookie, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.auth.auth0_oauth import router as auth_router
+from src.auth.firebase_oauth import router as auth_router
 from src.auth.token_store import get_session, get_latest_session, get_uid_for_session
 from src.db.profile_repository import (
     get_rich_profile,

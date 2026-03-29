@@ -62,16 +62,13 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
         isAuthenticating = true
         errorMessage = nil
 
-        // The FastAPI server at :8000 redirects to Auth0 for Google sign-in
+        // Firebase login page handles Google OAuth popup, gets real access token
         guard let authURL = URL(string: "http://localhost:8000/auth/login") else {
             errorMessage = "Invalid auth URL"
             isAuthenticating = false
             return
         }
 
-        // Use ASWebAuthenticationSession — opens system browser sheet
-        // The callback scheme doesn't matter much since the login page
-        // POSTs to the backend directly. We use a custom scheme to close the browser.
         let session = ASWebAuthenticationSession(
             url: authURL,
             callbackURLScheme: "secondself"
@@ -90,8 +87,7 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
             isAuthenticating = false
         }
 
-        // Also start polling — Auth0 redirects back to the backend which
-        // saves tokens to .session_store.json. We detect that file change.
+        // Poll for session file — Firebase login POSTs tokens to backend
         startPollingForSession()
     }
 
@@ -162,6 +158,16 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
             onAuthenticated?()
             notifyOrchestratorOfAuth()
         }
+    }
+
+    // MARK: - Sign Out
+
+    func signOut() {
+        // Clear session file
+        try? "{}".data(using: .utf8)?.write(to: URL(fileURLWithPath: sessionStorePath))
+        isAuthenticated = false
+        userName = nil
+        print("[GoogleAuth] Signed out")
     }
 
     /// Tell the orchestrator to reload Google OAuth token after sign-in.

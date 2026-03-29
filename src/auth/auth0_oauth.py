@@ -204,7 +204,7 @@ async def auth_native_callback(
 
 _GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 _GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-_GOOGLE_REDIRECT_URI = "http://localhost:8000/auth/google-callback"
+_GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8080")
 _GOOGLE_SCOPES = " ".join([
     "openid", "email", "profile",
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -213,17 +213,52 @@ _GOOGLE_SCOPES = " ".join([
     "https://www.googleapis.com/auth/calendar.events",
 ])
 
-_pending_google_auth: dict[str, str] = {}
+_google_auth_result: dict | None = None
 
 
 @router.get("/google-login")
 async def google_login():
-    """Direct Google OAuth — no Auth0. Gets a real Google access token."""
+    """Direct Google OAuth — spins up a temp server on :8080 to catch the callback."""
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    from urllib.parse import urlparse, parse_qs
+
     if not _GOOGLE_CLIENT_ID:
         return JSONResponse({"error": "GOOGLE_CLIENT_ID not set in .env"}, status_code=500)
 
+    global _google_auth_result
+    _google_auth_result = None
+
     state = secrets.token_urlsafe(24)
-    _pending_google_auth[state] = "pending"
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            global _google_auth_result
+            query = parse_qs(urlparse(self.path).query)
+            code = query.get("code", [None])[0]
+            if code:
+                _google_auth_result = {"code": code, "state": state}
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"""<html><body style="background:#0a0a0a;color:#fff;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+                    <div style="text-align:center"><h1>Signed in!</h1><p>You can close this tab.</p></div>
+                    <script>setTimeout(()=>window.close(),1500)</script></body></html>""")
+            else:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"No code received")
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+        def log_message(self, *args): pass
+
+    # Start temp server on :8080 in background
+    def run_callback_server():
+        server = HTTPServer(("localhost", 8080), CallbackHandler)
+        server.timeout = 120
+        server.handle_request()
+
+    threading.Thread(target=run_callback_server, daemon=True).start()
 
     params = urlencode({
         "client_id": _GOOGLE_CLIENT_ID,
@@ -237,13 +272,17 @@ async def google_login():
     return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}", status_code=302)
 
 
-@router.get("/google-callback")
-async def google_callback(code: str = Query(...), state: str = Query("")):
-    """Exchange Google auth code for access token."""
-    if state not in _pending_google_auth:
-        return JSONResponse({"error": "Invalid state"}, status_code=400)
-    _pending_google_auth.pop(state, None)
+@router.get("/google-poll")
+async def google_poll():
+    """Poll for Google auth result after the :8080 callback fires."""
+    global _google_auth_result
+    if not _google_auth_result:
+        return JSONResponse({"status": "waiting"})
 
+    code = _google_auth_result["code"]
+    _google_auth_result = None
+
+    # Exchange code for tokens
     async with httpx.AsyncClient() as client:
         resp = await client.post("https://oauth2.googleapis.com/token", data={
             "code": code,
@@ -260,7 +299,7 @@ async def google_callback(code: str = Query(...), state: str = Query("")):
     tokens = resp.json()
     access_token = tokens.get("access_token", "")
 
-    # Get user info from Google
+    # Get user info
     async with httpx.AsyncClient() as client:
         userinfo = await client.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
@@ -268,18 +307,15 @@ async def google_callback(code: str = Query(...), state: str = Query("")):
         )
     user = userinfo.json() if userinfo.status_code == 200 else {}
 
-    email = user.get("email", "")
-    name = user.get("name", "")
-
     session_id = create_session(
         google_access_token=access_token,
-        email=email,
-        name=name,
+        email=user.get("email", ""),
+        name=user.get("name", ""),
         uid=f"google|{user.get('id', '')}",
     )
-    log.info("Direct Google auth session created for %s (token length=%d)", email, len(access_token))
+    log.info("Google auth session created for %s (token length=%d)", user.get("email", ""), len(access_token))
 
-    return RedirectResponse("secondself://auth-complete", status_code=302)
+    return {"status": "ok", "name": user.get("name", ""), "email": user.get("email", "")}
 
 
 # ---------------------------------------------------------------------------
