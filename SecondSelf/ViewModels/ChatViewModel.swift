@@ -44,7 +44,7 @@ final class ChatViewModel: ObservableObject {
 
     // Voice input
     let audioRecorder = AudioRecorder()
-    private let elevenLabs = ElevenLabsService()
+    private let speechService = SpeechService()
     private var voiceErrorTimer: Task<Void, Never>?
     private var currentTranscriptionFile: URL?
     private let voiceLogger = Logger(subsystem: "com.secondself.app", category: "VoiceInput")
@@ -574,9 +574,9 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Voice Input
 
-    /// Check if ElevenLabs API key is present. Sets initial voice state.
+    /// Check if OpenAI API key is present for Whisper STT.
     func checkVoiceAvailability() {
-        voiceState = elevenLabs.hasAPIKey ? .idle : .hidden
+        voiceState = speechService.hasAPIKey ? .idle : .hidden
     }
 
     /// Pre-flight mic permission check. Call on VoiceInputButton appear.
@@ -629,9 +629,9 @@ final class ChatViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let text = try await self.elevenLabs.transcribe(fileURL: fileURL)
+                let text = try await self.speechService.transcribe(fileURL: fileURL)
                 self.handleTranscription(text: text)
-            } catch let error as ElevenLabsService.STTError {
+            } catch let error as SpeechService.STTError {
                 self.setVoiceError(error.errorDescription ?? "Transcription failed")
             } catch {
                 self.setVoiceError("Transcription failed")
@@ -661,7 +661,7 @@ final class ChatViewModel: ObservableObject {
         }
 
         // Reset to idle (or hidden if no key)
-        voiceState = elevenLabs.hasAPIKey ? .idle : .hidden
+        voiceState = speechService.hasAPIKey ? .idle : .hidden
     }
 
     private func handleTranscription(text: String) {

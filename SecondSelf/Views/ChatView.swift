@@ -43,6 +43,11 @@ struct ChatView: View {
                     .padding(.top, 26)
                     .padding(.bottom, 12)
                     .animation(.ssMessageEntrance, value: viewModel.messages.count)
+                    .onAppear {
+                        if let lastMessage = viewModel.messages.last {
+                            scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
                     .onChange(of: viewModel.messages.count) { _ in
                         withAnimation(.ssScrollSpring) {
                             if let lastMessage = viewModel.messages.last {

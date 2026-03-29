@@ -52,8 +52,14 @@ export default function BuildingScreen({
     return () => clearInterval(interval);
   }, []);
 
-  // Call /onboard on mount
+  // Call /onboard on mount (once only)
+  const onProfileRef = useRef(onProfile);
+  onProfileRef.current = onProfile;
+  const hasFired = useRef(false);
+
   useEffect(() => {
+    if (hasFired.current) return;
+    hasFired.current = true;
     let cancelled = false;
 
     async function run() {
@@ -62,7 +68,7 @@ export default function BuildingScreen({
         if (cancelled) return;
         apiDone.current = true;
         profileRef.current = resp.profile;
-        onProfile(resp.profile);
+        onProfileRef.current(resp.profile);
         // Jump to final step
         setActiveStep(STEPS.length - 1);
       } catch (err) {
@@ -74,7 +80,7 @@ export default function BuildingScreen({
 
     run();
     return () => { cancelled = true; };
-  }, [name, email, role, sessionId, onProfile]);
+  }, [name, email, role, sessionId]);
 
   // Advance to next screen once we hit the last step
   useEffect(() => {
@@ -120,6 +126,16 @@ export default function BuildingScreen({
         {error && (
           <p className="text-red-500 text-sm text-center">{error}</p>
         )}
+
+        <button
+          onClick={() => {
+            apiDone.current = true;
+            onComplete();
+          }}
+          className="text-sm text-black/40 hover:text-black/70 transition-colors underline underline-offset-2"
+        >
+          skip
+        </button>
       </div>
     </div>
   );

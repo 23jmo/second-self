@@ -90,18 +90,48 @@ async def latest_session():
     }
 
 
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
+
+
 @app.post("/onboard", response_model=OnboardResponse)
 async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
-    """Run the full deep memory pipeline.
+    """Run the full deep memory pipeline (or return demo data if DEMO_MODE=true)."""
+    effective_session_id = body.session_id or session_id or uuid.uuid4().hex
 
-    1. Tavily web search (always)
-    2. Gmail fetch + Calendar fetch (if Google authed)
-    3. Email cleaning + parallel analysis (voice, topics, behavior, relationships)
-    4. Event extraction → episodic memory
-    5. Build identity.md + preferences.md
-    6. Save profiles to Firestore
-    """
-    effective_session_id = body.session_id or session_id
+    if DEMO_MODE:
+        log.info("DEMO_MODE: returning fake profile for %s", body.name)
+        slim = SecondSelfProfile(
+            identity=Identity(
+                name=body.name or "Johnathan Mo",
+                role="Founder & Engineer",
+                company="Second Self",
+            ),
+            voice=Voice(
+                formality="casual-professional",
+                avg_email_length="medium",
+                signature_phrases=["let's ship it", "sounds good", "makes sense"],
+                opens_with="Hey",
+                closes_with="Best",
+                tone="direct and warm",
+            ),
+            behavior=Behavior(
+                work_hours="10am-2am",
+                meeting_load="light",
+                response_style="concise, action-oriented",
+                peak_focus_time="late night",
+            ),
+            context=Context(
+                active_projects=["Second Self", "identity pipeline", "notch UI"],
+                top_collaborators=["Mac"],
+                current_priorities=["ship the demo", "Railway deploy", "investor deck"],
+            ),
+        )
+        return OnboardResponse(
+            profile=slim,
+            sources_used=["demo"],
+            session_id=effective_session_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
 
     # Get Google access token if authed
     token_data = get_session(effective_session_id) if effective_session_id else None
@@ -126,10 +156,6 @@ async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
             context=slim.context,
         )
         sources_used = ["fallback"]
-
-    # Generate session if needed
-    if not effective_session_id:
-        effective_session_id = uuid.uuid4().hex
 
     # Save profiles to Firestore (keyed by UID for cross-session persistence)
     uid = get_uid_for_session(effective_session_id)

@@ -210,13 +210,8 @@ final class NotchOverlayController: NSObject {
                 return nil
 
             case 2:
-                // Full chat: click in notch area → collapse, otherwise pass through to chat UI
-                let clickLocation = NSEvent.mouseLocation
-                let notchRect = self.notchHitRect()
-                if notchRect.contains(clickLocation) {
-                    self.collapse()
-                    return nil
-                }
+                // Full chat: pass all clicks through to SwiftUI content.
+                // Dismiss is handled by the global monitor (click outside) and Escape key.
                 return event
 
             default:
@@ -350,8 +345,6 @@ final class NotchOverlayController: NSObject {
         guard chatViewModel.expansionStage == 0 else { return }
         let notchRect = notchHitRect()
         let isInNotchArea = notchRect.contains(mouseLocation)
-        if isInNotchArea { print("[HOVER] in notch area, peepingVisible=\(peepingVisible) mouse=\(mouseLocation)") }
-
         if isInNotchArea {
             if !peepingVisible {
                 setPeepingVisible(true, cursorX: mouseLocation.x)

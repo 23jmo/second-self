@@ -1,27 +1,33 @@
 import SwiftUI
 
-/// First-run setup wizard shown in the notch panel when the secondself user
-/// needs a GUI session or Screen Recording permission.
-/// Guides the user through the one unavoidable manual step.
+/// First-run setup wizard shown in the notch panel.
+/// Shows live status of each service and guides the user through manual steps.
 struct SetupWizardView: View {
     @ObservedObject var authManager: GoogleAuthManager
     var onSetupComplete: (() -> Void)?
+
     @State private var currentStep: SetupStep = .checking
-    @State private var agentHealthy = false
-    @State private var pollTimer: Timer?
+    @State private var statusLines: [StatusLine] = []
+    @State private var pollTask: Task<Void, Never>?
 
     enum SetupStep {
-        case checking       // Initial health check
-        case needsLogin     // secondself user needs a GUI session
-        case needsPermission // Screen Recording not granted
-        case ready          // All good
+        case checking
+        case needsLogin
+        case needsPermission
+        case ready
+    }
+
+    struct StatusLine: Identifiable {
+        let id = UUID()
+        let icon: String
+        let text: String
+        let ok: Bool
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Spacer().frame(height: 16)
 
-            // Mascot + title
             VStack(spacing: 8) {
                 MascotGIFView(width: 48, height: 62)
                     .frame(width: 48, height: 62)
@@ -31,9 +37,8 @@ struct SetupWizardView: View {
                     .foregroundColor(Color.ssTextPrimary)
             }
 
-            Spacer().frame(height: 16)
+            Spacer().frame(height: 12)
 
-            // Step content
             Group {
                 switch currentStep {
                 case .checking:
@@ -50,50 +55,70 @@ struct SetupWizardView: View {
 
             Spacer()
         }
-        .frame(width: 420, height: 400)
+        .frame(width: 420, height: 420)
         .background(Color.ssNotchBlack)
         .environment(\.colorScheme, .dark)
-        .onAppear { runHealthCheck() }
-        .onDisappear { pollTimer?.invalidate() }
+        .task { await runChecks() }
+        .onDisappear { pollTask?.cancel() }
     }
 
     // MARK: - Step: Checking
 
     private var checkingContent: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .progressViewStyle(.circular)
-                .scaleEffect(0.9)
-            Text("Checking setup...")
-                .font(.system(size: 13))
-                .foregroundColor(Color.ssTextSecondary)
+        VStack(spacing: 10) {
+            ForEach(statusLines) { line in
+                HStack(spacing: 8) {
+                    Image(systemName: line.icon)
+                        .font(.system(size: 11))
+                        .foregroundColor(line.ok ? Color.ssSuccess : Color.ssTextSecondary)
+                        .frame(width: 16)
+                    Text(line.text)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(Color.ssTextPrimary)
+                    Spacer()
+                }
+            }
+
+            if statusLines.count < 4 {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text("Checking...")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color.ssTextSecondary)
+                    Spacer()
+                }
+                .padding(.top, 4)
+            }
         }
     }
 
     // MARK: - Step: Needs Login
 
     private var needsLoginContent: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             stepBadge(number: 1, total: 2)
 
             Text("Create a GUI session")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(Color.ssTextPrimary)
 
-            VStack(alignment: .leading, spacing: 8) {
-                instructionRow(icon: "person.crop.circle", text: "Click your name in the menu bar")
-                instructionRow(icon: "arrow.right.arrow.left", text: "Switch to 'secondself'")
-                instructionRow(icon: "key", text: "Password: secondself")
-                instructionRow(icon: "arrow.uturn.backward", text: "Switch back to your account")
-            }
-            .padding(.horizontal, 8)
+            statusSummary
 
-            Text("This creates a desktop session for your digital twin.\nOnly needed once.")
+            VStack(alignment: .leading, spacing: 6) {
+                instructionRow(icon: "1.circle", text: "Click your name in the menu bar")
+                instructionRow(icon: "2.circle", text: "Switch to 'secondself'")
+                instructionRow(icon: "3.circle", text: "Password: secondself")
+                instructionRow(icon: "4.circle", text: "Switch back to your account")
+            }
+            .padding(.horizontal, 4)
+
+            Text("This creates a desktop for your twin. Only needed once.")
                 .font(.system(size: 11))
                 .foregroundColor(Color.ssTextSecondary)
                 .multilineTextAlignment(.center)
 
-            Button(action: openFastUserSwitching) {
+            Button(action: openUserSettings) {
                 HStack(spacing: 6) {
                     Image(systemName: "person.2.fill")
                         .font(.system(size: 12))
@@ -107,7 +132,7 @@ struct SetupWizardView: View {
             }
             .buttonStyle(.plain)
 
-            Button("Check again") { runHealthCheck() }
+            Button("Recheck") { Task { await runChecks() } }
                 .font(.system(size: 12))
                 .foregroundColor(Color.ssTwinGreen)
                 .buttonStyle(.plain)
@@ -117,24 +142,25 @@ struct SetupWizardView: View {
     // MARK: - Step: Needs Permission
 
     private var needsPermissionContent: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             stepBadge(number: 2, total: 2)
 
             Text("Grant Screen Recording")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(Color.ssTextPrimary)
 
-            VStack(alignment: .leading, spacing: 8) {
-                instructionRow(icon: "person.crop.circle", text: "Switch to 'secondself' user")
-                instructionRow(icon: "gearshape", text: "Open System Settings")
-                instructionRow(icon: "eye", text: "Privacy > Screen Recording")
-                instructionRow(icon: "checkmark.circle", text: "Enable python3")
-                instructionRow(icon: "arrow.uturn.backward", text: "Switch back")
+            statusSummary
+
+            VStack(alignment: .leading, spacing: 6) {
+                instructionRow(icon: "1.circle", text: "Switch to 'secondself' user")
+                instructionRow(icon: "2.circle", text: "System Settings > Privacy > Screen Recording")
+                instructionRow(icon: "3.circle", text: "Enable python3")
+                instructionRow(icon: "4.circle", text: "Switch back to your account")
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 4)
 
             HStack(spacing: 12) {
-                Button(action: openFastUserSwitching) {
+                Button(action: openUserSettings) {
                     HStack(spacing: 6) {
                         Image(systemName: "person.2.fill")
                             .font(.system(size: 12))
@@ -152,7 +178,7 @@ struct SetupWizardView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "gearshape")
                             .font(.system(size: 12))
-                        Text("Open Settings")
+                        Text("Settings")
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .foregroundColor(Color.ssTwinGreen)
@@ -166,16 +192,11 @@ struct SetupWizardView: View {
                 .buttonStyle(.plain)
             }
 
-            // Polling indicator
             HStack(spacing: 6) {
-                if !agentHealthy {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(Color.ssTextSecondary)
-                    Text("Waiting for permission...")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.ssTextSecondary)
-                }
+                ProgressView().controlSize(.mini).tint(Color.ssTextSecondary)
+                Text("Polling agent server...")
+                    .font(.system(size: 11))
+                    .foregroundColor(Color.ssTextSecondary)
             }
         }
     }
@@ -183,7 +204,7 @@ struct SetupWizardView: View {
     // MARK: - Step: Ready
 
     private var readyContent: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 40))
                 .foregroundColor(Color.ssSuccess)
@@ -192,11 +213,33 @@ struct SetupWizardView: View {
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(Color.ssTextPrimary)
 
+            statusSummary
+
             Text("Your digital twin is ready.\nSign in to get started.")
                 .font(.system(size: 13))
                 .foregroundColor(Color.ssTextSecondary)
                 .multilineTextAlignment(.center)
         }
+    }
+
+    // MARK: - Shared status summary
+
+    private var statusSummary: some View {
+        VStack(spacing: 4) {
+            ForEach(statusLines) { line in
+                HStack(spacing: 6) {
+                    Image(systemName: line.ok ? "checkmark.circle.fill" : "xmark.circle")
+                        .font(.system(size: 10))
+                        .foregroundColor(line.ok ? Color.ssSuccess : Color.ssError)
+                    Text(line.text)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(Color.ssTextSecondary)
+                    Spacer()
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
     }
 
     // MARK: - Helpers
@@ -207,9 +250,7 @@ struct SetupWizardView: View {
             .foregroundColor(Color.ssTwinGreen)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(
-                Capsule().fill(Color.ssTwinGreen.opacity(0.15))
-            )
+            .background(Capsule().fill(Color.ssTwinGreen.opacity(0.15)))
     }
 
     private func instructionRow(icon: String, text: String) -> some View {
@@ -226,8 +267,7 @@ struct SetupWizardView: View {
 
     // MARK: - Actions
 
-    private func openFastUserSwitching() {
-        // Open the user switching menu via ControlCenter
+    private func openUserSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preferences.users")!)
     }
 
@@ -235,102 +275,148 @@ struct SetupWizardView: View {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
     }
 
-    private func runHealthCheck() {
+    // MARK: - Async checks (no Process on main thread, no semaphores)
+
+    @MainActor
+    private func runChecks() async {
         currentStep = .checking
+        statusLines = []
 
-        // Check if secondself user exists
-        let userExists = checkUserExists()
-        if !userExists {
-            // postinstall should have created the user — something is wrong
+        // 1. Check secondself user
+        let userExists = await checkUserExistsAsync()
+        statusLines.append(StatusLine(
+            icon: userExists ? "checkmark.circle.fill" : "xmark.circle",
+            text: userExists ? "secondself user exists" : "secondself user missing",
+            ok: userExists
+        ))
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // 2. Check GUI session
+        let hasGUI = await checkGUISessionAsync()
+        statusLines.append(StatusLine(
+            icon: hasGUI ? "checkmark.circle.fill" : "xmark.circle",
+            text: hasGUI ? "GUI session active" : "GUI session needed",
+            ok: hasGUI
+        ))
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // 3. Check agent server
+        let agentOk = await checkAgentHealthAsync()
+        statusLines.append(StatusLine(
+            icon: agentOk ? "checkmark.circle.fill" : "xmark.circle",
+            text: agentOk ? "Agent server healthy" : "Agent server not responding",
+            ok: agentOk
+        ))
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // 4. Check Chrome/Chromium
+        let chromeOk = await checkChromeAsync()
+        statusLines.append(StatusLine(
+            icon: chromeOk ? "checkmark.circle.fill" : "xmark.circle",
+            text: chromeOk ? "Chrome CDP ready" : "Chrome not running",
+            ok: chromeOk
+        ))
+        try? await Task.sleep(for: .milliseconds(300))
+
+        // Determine step
+        if agentOk {
+            currentStep = .ready
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                markSetupComplete()
+            }
+        } else if !userExists || !hasGUI {
             currentStep = .needsLogin
-            return
+            startPolling()
+        } else {
+            currentStep = .needsPermission
+            startPolling()
         }
+    }
 
-        // Check if agent server is healthy (implies GUI session + Screen Recording)
-        checkAgentHealth { healthy in
-            DispatchQueue.main.async {
-                if healthy {
-                    self.agentHealthy = true
-                    self.currentStep = .ready
-                    // Auto-dismiss after 2 seconds
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        self.markSetupComplete()
-                    }
-                } else {
-                    // Check if there's a GUI session for secondself
-                    let hasGUISession = self.checkGUISession()
-                    if !hasGUISession {
-                        self.currentStep = .needsLogin
-                    } else {
-                        self.currentStep = .needsPermission
-                    }
-                    self.startPolling()
+    private func checkUserExistsAsync() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/id")
+                process.arguments = ["secondself"]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    continuation.resume(returning: process.terminationStatus == 0)
+                } catch {
+                    continuation.resume(returning: false)
                 }
             }
         }
     }
 
-    private func checkUserExists() -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/id")
-        process.arguments = ["secondself"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
-        return process.terminationStatus == 0
-    }
-
-    private func checkGUISession() -> Bool {
-        // Check if WindowServer has multiple sessions (implies secondself is logged in)
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["aux"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-        process.waitUntilExit()
-
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let wsCount = output.components(separatedBy: "\n").filter { $0.contains("WindowServer") && !$0.contains("grep") }.count
-        return wsCount >= 2
-    }
-
-    private func checkAgentHealth(completion: @escaping (Bool) -> Void) {
-        guard let url = URL(string: "http://localhost:8421/health") else {
-            completion(false)
-            return
+    private func checkGUISessionAsync() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                let pipe = Pipe()
+                process.executableURL = URL(fileURLWithPath: "/bin/ps")
+                process.arguments = ["aux"]
+                process.standardOutput = pipe
+                process.standardError = FileHandle.nullDevice
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+                    let wsCount = output.components(separatedBy: "\n")
+                        .filter { $0.contains("WindowServer") && !$0.contains("grep") }.count
+                    continuation.resume(returning: wsCount >= 2)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
         }
+    }
+
+    private func checkAgentHealthAsync() async -> Bool {
+        guard let url = URL(string: "http://localhost:8421/health") else { return false }
         var request = URLRequest(url: url)
         request.timeoutInterval = 3
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let data = data,
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  json["status"] as? String == "ok" else {
-                completion(false)
-                return
-            }
-            completion(true)
-        }.resume()
+                  json["status"] as? String == "ok" else { return false }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func checkChromeAsync() async -> Bool {
+        guard let url = URL(string: "http://localhost:9222/json/version") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
     }
 
     private func startPolling() {
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
-            checkAgentHealth { healthy in
-                DispatchQueue.main.async {
-                    if healthy {
-                        self.pollTimer?.invalidate()
-                        self.agentHealthy = true
-                        self.currentStep = .ready
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            self.markSetupComplete()
-                        }
+        pollTask?.cancel()
+        pollTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
+                let healthy = await checkAgentHealthAsync()
+                if healthy {
+                    await MainActor.run {
+                        // Refresh all status lines
+                        Task { await runChecks() }
                     }
+                    break
                 }
             }
         }

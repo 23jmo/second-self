@@ -22,16 +22,36 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
     private let sessionStorePath: String
 
     override init() {
-        // Find .session_store.json relative to the executable (same as discoverEnvironment)
-        let execURL = Bundle.main.executableURL ?? URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
-        var root = execURL.deletingLastPathComponent()
-        for _ in 0..<10 {
-            if FileManager.default.fileExists(atPath: root.appendingPathComponent("orchestrator/server.py").path) {
+        // Find .session_store.json — check known install locations first, then walk up from binary
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let knownRoots = [
+            "\(home)/second-self",
+            "/usr/local/share/second-self",
+        ]
+
+        var foundRoot: String? = nil
+        for root in knownRoots {
+            if fm.fileExists(atPath: "\(root)/orchestrator/server.py") {
+                foundRoot = root
                 break
             }
-            root = root.deletingLastPathComponent()
         }
-        self.sessionStorePath = root.appendingPathComponent(".session_store.json").path
+
+        // Fallback: walk up from binary (works in dev with swift run)
+        if foundRoot == nil {
+            let execURL = Bundle.main.executableURL ?? URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+            var candidate = execURL.deletingLastPathComponent()
+            for _ in 0..<10 {
+                if fm.fileExists(atPath: candidate.appendingPathComponent("orchestrator/server.py").path) {
+                    foundRoot = candidate.path
+                    break
+                }
+                candidate = candidate.deletingLastPathComponent()
+            }
+        }
+
+        self.sessionStorePath = (foundRoot ?? "\(home)/second-self") + "/.session_store.json"
         super.init()
         checkExistingSession()
     }

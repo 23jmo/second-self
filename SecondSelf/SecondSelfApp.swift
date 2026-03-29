@@ -310,39 +310,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Whether the first-run setup wizard should be shown.
+    /// Only checks UserDefaults + user existence (fast, no network).
     var needsFirstRunSetup: Bool {
-        // If setup was already completed, skip
         if UserDefaults.standard.bool(forKey: "setupComplete") { return false }
 
-        // Check if secondself user exists
+        // Check if secondself user exists (fast shell check)
         let check = Process()
         check.executableURL = URL(fileURLWithPath: "/usr/bin/id")
         check.arguments = ["secondself"]
         check.standardOutput = FileHandle.nullDevice
         check.standardError = FileHandle.nullDevice
-        try? check.run()
-        check.waitUntilExit()
-
-        // If user doesn't exist, definitely needs setup
-        if check.terminationStatus != 0 { return true }
-
-        // If agent server isn't responding, needs setup
-        // (quick synchronous check — don't block for long)
-        let semaphore = DispatchSemaphore(value: 0)
-        var healthy = false
-        if let url = URL(string: "http://localhost:8421/health") {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 2
-            URLSession.shared.dataTask(with: request) { data, response, _ in
-                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
-                    healthy = true
-                }
-                semaphore.signal()
-            }.resume()
-            _ = semaphore.wait(timeout: .now() + 3)
+        do {
+            try check.run()
+            check.waitUntilExit()
+        } catch {
+            return true
         }
 
-        return !healthy
+        return check.terminationStatus != 0
     }
 
     private func clearAgentBrowser() {
