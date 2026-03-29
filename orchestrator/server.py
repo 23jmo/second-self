@@ -70,7 +70,19 @@ BROWSER_TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "browser_press", "description": "Press a keyboard key in the browser (Enter, Tab, Escape, etc.).",
      "input_schema": {"type": "object", "properties": {"key": {"type": "string", "description": "Key to press"}}, "required": ["key"]}},
+    {"name": "sync_cookies",
+     "description": "Sync cookies from the user's Chrome browser into the agent browser. Call this ONLY after the user approves cookie sync via render_confirm_action. This transfers authenticated sessions (Google, GitHub, etc.) so the agent can browse logged-in sites.",
+     "input_schema": {"type": "object", "properties": {
+         "profile": {"type": "string", "description": "Chrome profile to sync from (e.g. 'Profile 4'). Omit to auto-detect."},
+     }}},
 ]
+
+# Browser tool names that trigger the cookie sync prompt (navigation-related)
+BROWSER_NAV_TOOLS = {"browser_goto"}
+
+# Cookie sync session state
+_cookies_synced: bool = False
+_cookies_sync_offered: bool = False
 
 DESKTOP_TOOLS = [
     {"name": "open_app", "description": "Open a macOS application by name. Native apps only (Notes, Finder, Calendar).",
@@ -319,14 +331,89 @@ def call_tavily(query: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Cookie sync execution
+# ---------------------------------------------------------------------------
+
+def _get_chrome_profile_info() -> tuple[str, str]:
+    """Get the auto-detected Chrome profile name and display name for the prompt."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from cookie_sync.export import get_default_profile, get_chrome_profiles
+        default = get_default_profile()
+        profiles = get_chrome_profiles()
+        display_name = profiles.get(default, default)
+        return default, display_name
+    except Exception:
+        return "Default", "Default"
+
+
+async def _execute_cookie_sync(profile: str | None = None) -> dict:
+    """Run the full cookie export + CDP import pipeline.
+
+    Runs as the primary user (johnathanmo) so has Keychain access for export
+    and localhost CDP access for import.
+    """
+    global _cookies_synced
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from cookie_sync.export import export_cookies
+        from cookie_sync.import_cookies import import_cookies_sync
+
+        # Step 1: Export cookies from user's Chrome
+        state = await asyncio.to_thread(export_cookies, profile)
+        cookie_count = len(state.get("cookies", []))
+        print(f"[orchestrator] Cookie sync: exported {cookie_count} cookies")
+
+        # Step 2: Import into secondself's Chrome via CDP
+        result = await asyncio.to_thread(import_cookies_sync)
+        imported = result.get("imported", 0)
+        print(f"[orchestrator] Cookie sync: imported {imported} cookies")
+
+        _cookies_synced = True
+        return {
+            "status": "ok",
+            "exported": cookie_count,
+            "imported": imported,
+            "profile": profile or "auto-detected",
+        }
+    except Exception as e:
+        print(f"[orchestrator] Cookie sync failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Tool execution
 # ---------------------------------------------------------------------------
 
 async def execute_tool_call(tool_name: str, arguments: dict) -> str:
     """Execute a tool call — routes to agent-server, productivity tools, or UI layer."""
+    global _cookies_sync_offered
+
     # UI render tools are handled by the SSE layer, not executed
     if tool_name.startswith("render_"):
         return json.dumps({"status": "rendered", "awaiting_user_action": True})
+
+    # Cookie sync tool — run the full export+import pipeline
+    if tool_name == "sync_cookies":
+        profile = arguments.get("profile")
+        result = await _execute_cookie_sync(profile)
+        return json.dumps(result)
+
+    # First browser navigation without cookies → hint Claude to ask the user
+    if tool_name in BROWSER_NAV_TOOLS and not _cookies_synced and not _cookies_sync_offered:
+        _cookies_sync_offered = True
+        profile_dir, profile_name = await asyncio.to_thread(_get_chrome_profile_info)
+        return json.dumps({
+            "status": "no_cookies",
+            "message": (
+                f"The browser has no authenticated sessions. "
+                f"Before proceeding, ask the user if they'd like to sync cookies "
+                f"from their Chrome profile '{profile_name}' ({profile_dir}) "
+                f"so you can browse logged-in sites. "
+                f"Use render_confirm_action to ask, then call sync_cookies if they approve. "
+                f"After syncing (or if they decline), retry this browser_goto."
+            ),
+        })
 
     # Productivity tools (Gmail, Calendar, Docs, web search)
     if tool_name in PRODUCTIVITY_TOOL_NAMES:
@@ -354,7 +441,7 @@ SYSTEM_PROMPT = (
     "\n"
     "BROWSER TOOLS (for any web task):\n"
     "  browser_goto(url), browser_snapshot(), browser_click(ref), browser_fill(ref, text),\n"
-    "  browser_press(key), browser_text()\n"
+    "  browser_press(key), browser_text(), sync_cookies(profile?)\n"
     "\n"
     "DESKTOP TOOLS (native macOS apps only):\n"
     "  open_app(name), type_text(text), hotkey(keys), click(x, y), screenshot(), scroll(dy)\n"
@@ -378,6 +465,9 @@ SYSTEM_PROMPT = (
     "- For web tasks, use browser_* tools. For native macOS apps, use desktop tools.\n"
     "- NEVER mix browser and desktop tools in the same step.\n"
     "- ALWAYS call browser_snapshot() after navigation.\n"
+    "- COOKIE SYNC: If browser_goto returns status 'no_cookies', use render_confirm_action\n"
+    "  to ask the user if they want to sync their Chrome cookies. If they approve,\n"
+    "  call sync_cookies(), then retry the original browser_goto.\n"
     "- For email: use draft_email FIRST, then send_email after user confirms.\n"
     "- When the user mentions someone by name, use get_contact_info to find their email.\n"
     "- For inbox summaries, use summarize_emails.\n"
@@ -743,7 +833,9 @@ async def handle_anticipatory_setup(profile: dict) -> list:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Startup / shutdown lifecycle."""
-    global _google_access_token
+    global _google_access_token, _cookies_synced, _cookies_sync_offered
+    _cookies_synced = False
+    _cookies_sync_offered = False
 
     if not GEMINI_API_KEY:
         print("[orchestrator] WARNING: GEMINI_API_KEY not set. Set it: export GEMINI_API_KEY=your_key")
