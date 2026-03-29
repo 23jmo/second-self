@@ -56,8 +56,8 @@ GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=http://localhost:8080
 TAVILY_API_KEY=
 ANTHROPIC_API_KEY=
-USER_NAME=
-USER_EMAIL=
+USER_NAME=                # optional — auto-detected from Google sign-in
+USER_EMAIL=               # optional — auto-detected from Google sign-in
 ```
 
 ## Gmail OAuth rules

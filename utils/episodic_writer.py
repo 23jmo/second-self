@@ -30,6 +30,7 @@ _LINE_RE = re.compile(
     r"\s*\|\s*"
     r"(\w+)"                                # category
     r"\s*\|\s*"
+    r"(?:w:([\d.]+)\s*\|\s*)?"              # optional weight
     r"(.+?)"                                # summary
     r"\s*\|\s*"
     r"(\S+)\s*$"                            # source
@@ -85,12 +86,18 @@ def _parse_line(line: str) -> dict[str, Any] | None:
     match = _LINE_RE.match(line.strip())
     if not match:
         return None
-    return {
+    result: dict[str, Any] = {
         "date": match.group(1),
         "category": match.group(2),
-        "summary": match.group(3).strip(),
-        "source": match.group(4),
+        "summary": match.group(4).strip(),
+        "source": match.group(5),
     }
+    if match.group(3) is not None:
+        try:
+            result["weight"] = float(match.group(3))
+        except ValueError:
+            pass
+    return result
 
 
 def _read_event_lines(path: Path) -> list[str]:
@@ -122,6 +129,7 @@ def append_event(
     category: str = "other",
     source: str = "agent",
     timestamp: str = "",
+    weight: float | None = None,
 ) -> None:
     """Append a timestamped event to episodic.md. Never raises.
 
@@ -130,6 +138,8 @@ def append_event(
     Args:
         timestamp: Optional date string in "YYYY-MM-DD HH:MM" or "YYYY-MM-DD"
                    format. If empty, uses current UTC time.
+        weight: Optional recency weight (0.0-1.0). If provided, stored as
+                ``w:X.X`` between category and summary.
     """
     try:
         if category not in _VALID_CATEGORIES:
@@ -147,7 +157,9 @@ def append_event(
             date_str = ts
         else:
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        line = f"{date_str} | {category} | {safe_summary} | {safe_source}"
+
+        weight_segment = f"w:{weight:.1f} | " if weight is not None else ""
+        line = f"{date_str} | {category} | {weight_segment}{safe_summary} | {safe_source}"
 
         _append_line(SECONDSELF_PATH, line)
         _append_line(OUTPUT_PATH, line)
@@ -207,12 +219,16 @@ def get_weighted_events(
         except ValueError:
             event_dt = datetime.min.replace(tzinfo=timezone.utc)
 
+        stored_weight = parsed.get("weight")
         if event_dt >= cutoff_7d:
-            recent.append({**parsed, "weight": 1.0})
+            w = stored_weight if stored_weight is not None else 1.0
+            recent.append({**parsed, "weight": w})
         elif event_dt >= cutoff_30d:
-            mid.append({**parsed, "weight": 0.5})
+            w = stored_weight if stored_weight is not None else 0.5
+            mid.append({**parsed, "weight": w})
         else:
-            old.append({**parsed, "weight": 0.2})
+            w = stored_weight if stored_weight is not None else 0.2
+            old.append({**parsed, "weight": w})
 
     # Take up to recent_n from last 7 days
     recent_slice = recent[-recent_n:] if recent_n < len(recent) else recent
