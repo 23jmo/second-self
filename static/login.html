@@ -63,6 +63,7 @@
 
     const provider = new GoogleAuthProvider();
     provider.addScope("https://www.googleapis.com/auth/gmail.readonly");
+    provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
     provider.setCustomParameters({ prompt: "consent" });
 
     window.signIn = async function () {
@@ -99,8 +100,8 @@
         status.textContent = `Authenticated as ${name}. You can close this window.`;
         status.className = "success";
       } catch (err) {
-        console.error(err);
-        status.textContent = `Error: ${err.message}`;
+        console.error("Sign-in error detail:", err);
+        status.textContent = "Sign-in failed. Please try again.";
         status.className = "error";
         btn.disabled = false;
       }

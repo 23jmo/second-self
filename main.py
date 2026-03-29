@@ -1,4 +1,4 @@
-"""Second Self — Layer 1 Identity Pipeline orchestrator."""
+"""Second Self — Identity Pipeline orchestrator (Layers 1-4)."""
 
 import argparse
 import logging
@@ -12,23 +12,31 @@ logger = logging.getLogger(__name__)
 
 
 def _run_full_pipeline(no_cache: bool, dry_run: bool) -> None:
-    """Run the full Gmail + Tavily pipeline."""
+    """Run the full Gmail + Tavily pipeline (Layers 1-4)."""
     import os
     from auth.web_oauth import run_auth_server
     from fetch.gmail_fetch import fetch_emails
     from fetch.tavily_fetch import fetch_tavily_data
+    from fetch.calendar_fetch import fetch_calendar_events
     from clean.email_cleaner import clean_emails
     from analyze.voice_analyzer import analyze_voice
     from analyze.topic_extractor import extract_topics
     from analyze.behavior_analyzer import analyze_behavior
     from analyze.relationship_mapper import map_relationships
     from analyze.tavily_synthesizer import synthesize_tavily
+    from analyze.event_extractor import run_event_extraction
     from build.identity_builder import build_identity, run_build
+    from build.preferences_builder import build_preferences
 
     # Step 1: Auth via Firebase web flow
     logger.info("Step 1: Authenticating via Firebase...")
     token = run_auth_server()
-    access_token = token["access_token"]
+    access_token = token.get("access_token")
+    if not access_token:
+        raise RuntimeError(
+            "Auth server returned no access_token. "
+            "Check that the browser sign-in completed successfully."
+        )
 
     # Steps 2-3: Fetch (Tavily can run without Gmail)
     logger.info("Step 2: Tavily fetch...")
@@ -36,6 +44,14 @@ def _run_full_pipeline(no_cache: bool, dry_run: bool) -> None:
 
     logger.info("Step 3: Gmail fetch...")
     raw_emails = fetch_emails(force_refresh=no_cache, access_token=access_token)
+
+    logger.info("Step 3b: Calendar fetch...")
+    user_email = os.environ.get("USER_EMAIL", "")
+    calendar_events = fetch_calendar_events(
+        access_token=access_token,
+        user_email=user_email,
+        force_refresh=no_cache,
+    )
 
     # Step 4: Clean
     logger.info("Step 4: Cleaning emails...")
@@ -85,17 +101,144 @@ def _run_full_pipeline(no_cache: bool, dry_run: bool) -> None:
     else:
         run_build()
 
+    # Step 6b-6c: Event extraction + calendar already fetched (run in parallel)
+    logger.info("Step 6b: Extracting life events...")
+    life_events: list[dict[str, Any]] = []
+    try:
+        life_events = run_event_extraction(emails=cleaned)
+    except Exception as exc:
+        logger.error("Event extraction failed: %s", exc)
+
+    # Step 7: Build preferences (Layer 2) — needs calendar + analysis results
+    logger.info("Step 7: Building preferences profile...")
+    prefs_md = ""
+    try:
+        prefs_md = build_preferences(
+            behavior=analysis_results.get("behavior"),
+            relationships=analysis_results.get("relationships"),
+            calendar_events=calendar_events,
+            topics=analysis_results.get("topics"),
+        )
+        logger.info("Preferences profile built (%d chars).", len(prefs_md))
+    except Exception as exc:
+        logger.error("Preferences build failed: %s", exc)
+
+    # Dry-run: print preferences and episodic content
+    if dry_run and prefs_md:
+        print("\n--- DRY RUN: Preferences Profile ---\n")
+        print(prefs_md)
+    if dry_run and life_events:
+        print("\n--- DRY RUN: Life Events Extracted ---\n")
+        for evt in life_events[:20]:
+            print(f"  {evt['date']} [{evt['category']}] {evt['summary']} ({evt['confidence']})")
+
     # Summary
     contacts = (analysis_results.get("relationships") or {}).get("total_contacts", 0)
     topics_count = len(analysis_results.get("topics") or [])
 
+    # Calculate event year span
+    if life_events:
+        first_year = life_events[0]["date"][:4]
+        last_year = life_events[-1]["date"][:4]
+        year_span = int(last_year) - int(first_year) + 1
+    else:
+        year_span = 0
+
     print(f"\n  Emails processed: {len(cleaned)} ({sent_count} sent, {inbox_count} inbox)")
+    print(f"  Calendar events: {len(calendar_events)}")
     print(f"  Threads reconstructed: {len(thread_ids)}")
     print(f"  Contacts mapped: {contacts}")
     print(f"  Topics found: {topics_count}")
+    print(f"  Life events extracted: {len(life_events)} events across {year_span} years")
     if not dry_run:
         from build.identity_builder import SECONDSELF_PATH
+        from build.preferences_builder import SECONDSELF_PATH as PREFS_PATH
+        from utils.episodic_writer import SECONDSELF_PATH as EPISODIC_PATH
         print(f"  Identity profile written to: {SECONDSELF_PATH}")
+        print(f"  Preferences written to: {PREFS_PATH}")
+        print(f"  Episodic memory written to: {EPISODIC_PATH}")
+
+
+def _run_memory_only(no_cache: bool, dry_run: bool) -> None:
+    """Run only Layer 2 + 4 modules: event extraction + calendar + preferences.
+
+    Skips Gmail fetch and all Layer 1 analyzers. Requires prior pipeline run
+    (uses cached output files).
+    """
+    import os
+    from auth.web_oauth import run_auth_server
+    from fetch.calendar_fetch import fetch_calendar_events
+    from analyze.event_extractor import run_event_extraction
+    from build.preferences_builder import build_preferences
+
+    logger.info("Memory-only mode: refreshing Layer 2 + 4.")
+
+    # Auth for calendar
+    logger.info("Step 1: Authenticating via Firebase...")
+    token = run_auth_server()
+    access_token = token.get("access_token")
+    if not access_token:
+        raise RuntimeError(
+            "Auth server returned no access_token. "
+            "Check that the browser sign-in completed successfully."
+        )
+
+    # Step 2: Event extraction + calendar fetch in parallel
+    logger.info("Step 2: Running event extraction and calendar fetch...")
+    life_events: list[dict[str, Any]] = []
+    calendar_events: list[dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_events = pool.submit(run_event_extraction)
+        future_calendar = pool.submit(
+            fetch_calendar_events,
+            access_token=access_token,
+            user_email=os.environ.get("USER_EMAIL", ""),
+            force_refresh=no_cache,
+        )
+
+        try:
+            life_events = future_events.result()
+        except Exception as exc:
+            logger.error("Event extraction failed: %s", exc)
+
+        try:
+            calendar_events = future_calendar.result()
+        except Exception as exc:
+            logger.error("Calendar fetch failed: %s", exc)
+
+    # Step 3: Build preferences
+    logger.info("Step 3: Building preferences profile...")
+    prefs_md = ""
+    try:
+        prefs_md = build_preferences(calendar_events=calendar_events)
+    except Exception as exc:
+        logger.error("Preferences build failed: %s", exc)
+
+    # Dry-run output
+    if dry_run and prefs_md:
+        print("\n--- DRY RUN: Preferences Profile ---\n")
+        print(prefs_md)
+    if dry_run and life_events:
+        print("\n--- DRY RUN: Life Events Extracted ---\n")
+        for evt in life_events[:20]:
+            print(f"  {evt['date']} [{evt['category']}] {evt['summary']} ({evt['confidence']})")
+
+    # Summary
+    if life_events:
+        first_year = life_events[0]["date"][:4]
+        last_year = life_events[-1]["date"][:4]
+        year_span = int(last_year) - int(first_year) + 1
+    else:
+        year_span = 0
+
+    print(f"\n  Life events extracted: {len(life_events)} events across {year_span} years")
+    print(f"  Calendar events: {len(calendar_events)}")
+    if not dry_run:
+        from build.preferences_builder import SECONDSELF_PATH as PREFS_PATH
+        from utils.episodic_writer import SECONDSELF_PATH as EPISODIC_PATH
+        print(f"  Preferences written to: {PREFS_PATH}")
+        print(f"  Episodic memory written to: {EPISODIC_PATH}")
 
 
 def _run_tavily_only(no_cache: bool, dry_run: bool) -> None:
@@ -142,6 +285,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Run pipeline without writing identity.md")
     parser.add_argument("--no-cache", action="store_true", help="Bypass email cache and re-fetch")
     parser.add_argument("--tavily-only", action="store_true", help="Skip Gmail, build from Tavily only")
+    parser.add_argument("--memory-only", action="store_true",
+                        help="Skip Gmail fetch and analyzers, only refresh Layer 2+4 (events, calendar, preferences)")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     args = parser.parse_args()
 
@@ -156,6 +301,8 @@ def main() -> None:
     try:
         if args.tavily_only:
             _run_tavily_only(no_cache=args.no_cache, dry_run=args.dry_run)
+        elif args.memory_only:
+            _run_memory_only(no_cache=args.no_cache, dry_run=args.dry_run)
         else:
             _run_full_pipeline(no_cache=args.no_cache, dry_run=args.dry_run)
     except Exception as exc:
