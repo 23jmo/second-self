@@ -9,6 +9,7 @@ class OnboardRequest(BaseModel):
     email: str = ""
     context: str = ""  # optional: company, Twitter handle, etc.
     session_id: str = ""  # optional: reuse an existing auth session
+    uid: str = ""  # optional: Firebase UID (used by Cloud Function trigger)
 
 
 # --- Intermediate Data Models ---

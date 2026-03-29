@@ -98,6 +98,10 @@ async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
     4. Event extraction → episodic memory
     5. Build identity.md + preferences.md
     6. Save profiles to Firestore
+
+    Can be called with:
+    - session_id (from cookie or body) — full pipeline with Gmail/Calendar
+    - uid + name + email (from Cloud Function) — Tavily-only pipeline
     """
     effective_session_id = body.session_id or session_id
 
@@ -129,8 +133,9 @@ async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
     if not effective_session_id:
         effective_session_id = uuid.uuid4().hex
 
-    # Save profiles to Firestore (keyed by UID for cross-session persistence)
-    uid = get_uid_for_session(effective_session_id)
+    # Determine UID: prefer explicit uid from request (Cloud Function path),
+    # then derive from session
+    uid = body.uid or get_uid_for_session(effective_session_id)
     try:
         save_slim_profile(uid, slim, sources_used)
         save_rich_profile(uid, rich)

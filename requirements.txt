@@ -13,3 +13,4 @@ pydantic
 beautifulsoup4
 tavily-python
 filelock
+firebase-admin>=6.0.0
