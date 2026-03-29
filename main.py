@@ -11,6 +11,17 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 
+def _apply_token_identity(token: dict[str, Any]) -> None:
+    """Set USER_EMAIL and USER_NAME from the OAuth token if not already set."""
+    import os
+    if not os.environ.get("USER_EMAIL") and token.get("email"):
+        os.environ["USER_EMAIL"] = token["email"]
+        logger.info("Auto-detected USER_EMAIL: %s", token["email"])
+    if not os.environ.get("USER_NAME") and token.get("display_name"):
+        os.environ["USER_NAME"] = token["display_name"]
+        logger.info("Auto-detected USER_NAME: %s", token["display_name"])
+
+
 def _run_full_pipeline(no_cache: bool, dry_run: bool) -> None:
     """Run the full Gmail + Tavily pipeline (Layers 1-4)."""
     import os
@@ -28,8 +39,8 @@ def _run_full_pipeline(no_cache: bool, dry_run: bool) -> None:
     from build.identity_builder import build_identity, run_build
     from build.preferences_builder import build_preferences
 
-    # Step 1: Auth via Firebase web flow
-    logger.info("Step 1: Authenticating via Firebase...")
+    # Step 1: Auth via Google Identity Services
+    logger.info("Step 1: Authenticating...")
     token = run_auth_server()
     access_token = token.get("access_token")
     if not access_token:
@@ -37,6 +48,7 @@ def _run_full_pipeline(no_cache: bool, dry_run: bool) -> None:
             "Auth server returned no access_token. "
             "Check that the browser sign-in completed successfully."
         )
+    _apply_token_identity(token)
 
     # Steps 2-3: Fetch (Tavily can run without Gmail)
     logger.info("Step 2: Tavily fetch...")
@@ -174,7 +186,7 @@ def _run_memory_only(no_cache: bool, dry_run: bool) -> None:
     logger.info("Memory-only mode: refreshing Layer 2 + 4.")
 
     # Auth for calendar
-    logger.info("Step 1: Authenticating via Firebase...")
+    logger.info("Step 1: Authenticating...")
     token = run_auth_server()
     access_token = token.get("access_token")
     if not access_token:
@@ -182,6 +194,7 @@ def _run_memory_only(no_cache: bool, dry_run: bool) -> None:
             "Auth server returned no access_token. "
             "Check that the browser sign-in completed successfully."
         )
+    _apply_token_identity(token)
 
     # Step 2: Event extraction + calendar fetch in parallel
     logger.info("Step 2: Running event extraction and calendar fetch...")

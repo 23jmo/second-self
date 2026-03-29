@@ -1,8 +1,9 @@
-"""Firebase JS SDK web-based OAuth flow.
+"""Google Identity Services (GIS) web-based OAuth flow.
 
-Serves a login page that uses Firebase JS SDK to sign in with Google,
-captures the Google access token via a POST callback, persists it to disk,
-and shuts down. The pipeline then uses the access token for Gmail API calls.
+Serves a login page that uses the GIS JS library to sign in with Google,
+captures the Google access token via a POST callback, verifies required scopes,
+persists the token to disk, and shuts down. The pipeline then uses the access
+token for Gmail and Calendar API calls.
 """
 
 import json
@@ -10,6 +11,7 @@ import logging
 import os
 import threading
 import time
+import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,11 @@ _CALLBACK_TIMEOUT_SECONDS = 120
 _PORT = 8080
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+_REQUIRED_SCOPES = {
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+}
 
 # Module-level state for callback signaling
 _captured_token: dict[str, Any] | None = None
@@ -69,6 +76,33 @@ def _save_token(data: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Scope verification
+# ---------------------------------------------------------------------------
+
+def _verify_token_scopes(access_token: str) -> set[str]:
+    """Call Google's tokeninfo endpoint and return the granted scope set.
+
+    Raises EnvironmentError if the token is invalid or required scopes are
+    missing.
+    """
+    url = f"https://oauth2.googleapis.com/tokeninfo?access_token={access_token}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        raise EnvironmentError(f"Token verification failed: {exc}") from exc
+
+    granted = set(data.get("scope", "").split())
+    missing = _REQUIRED_SCOPES - granted
+    if missing:
+        raise EnvironmentError(
+            f"Token is missing required scopes: {', '.join(sorted(missing))}. "
+            "Delete ~/.secondself/firebase_token.json and re-authenticate."
+        )
+    return granted
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
@@ -77,30 +111,28 @@ app = FastAPI(title="Second Self Auth", docs_url=None, redoc_url=None)
 
 class AuthCallbackRequest(BaseModel):
     google_access_token: str
-    id_token: str
+    id_token: str = ""
     email: str
     display_name: str
 
 
-@app.get("/auth/firebase-config")
-async def firebase_config() -> dict[str, str]:
-    """Return Firebase config for the JS SDK on the login page."""
+@app.get("/auth/oauth-config")
+async def oauth_config() -> dict[str, str]:
+    """Return the Google OAuth client ID for the GIS JS library."""
     return {
-        "apiKey": os.environ.get("FIREBASE_API_KEY", ""),
-        "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN", ""),
-        "projectId": os.environ.get("FIREBASE_PROJECT_ID", ""),
+        "clientId": os.environ.get("GOOGLE_CLIENT_ID", ""),
     }
 
 
 @app.get("/auth/login")
 async def login_page() -> FileResponse:
-    """Serve the Firebase login page."""
+    """Serve the GIS login page."""
     return FileResponse(str(_STATIC_DIR / "login.html"))
 
 
 @app.post("/auth/callback")
 async def auth_callback(body: AuthCallbackRequest) -> JSONResponse:
-    """Receive tokens from the Firebase JS SDK after Google sign-in."""
+    """Receive tokens from the GIS JS library after Google sign-in."""
     global _captured_token
 
     token_data = {
@@ -126,9 +158,9 @@ async def auth_callback(body: AuthCallbackRequest) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 def _validate_env() -> None:
-    """Check that required Firebase env vars are set."""
+    """Check that required Google OAuth env vars are set."""
     missing = [
-        k for k in ("FIREBASE_API_KEY", "FIREBASE_AUTH_DOMAIN", "FIREBASE_PROJECT_ID")
+        k for k in ("GOOGLE_CLIENT_ID",)
         if not os.environ.get(k)
     ]
     if missing:
@@ -139,7 +171,7 @@ def _validate_env() -> None:
 
 
 def run_auth_server() -> dict[str, Any]:
-    """Authenticate via Firebase web flow. Returns token dict with access_token.
+    """Authenticate via Google Identity Services web flow. Returns token dict.
 
     Uses cached token if fresh. Otherwise starts a FastAPI server on port 8080,
     opens the browser to the login page, waits for the callback, then shuts down.
@@ -152,10 +184,10 @@ def run_auth_server() -> dict[str, Any]:
     # Check cache first
     cached = _load_token()
     if cached and _is_token_valid(cached):
-        logger.info("Using cached Firebase token for %s.", cached.get("email", "unknown"))
+        logger.info("Using cached token for %s.", cached.get("email", "unknown"))
         return cached
 
-    logger.info("Starting Firebase web auth flow...")
+    logger.info("Starting Google Identity Services auth flow...")
     _captured_token = None
     _auth_event = threading.Event()
 

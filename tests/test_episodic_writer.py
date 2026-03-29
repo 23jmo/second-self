@@ -286,3 +286,77 @@ def test_append_event_source_with_spaces(tmp_path: Path) -> None:
     parsed = ew._parse_line(lines[0])
     assert parsed is not None
     assert parsed["source"] == "my_agent"
+
+
+# ---------------------------------------------------------------------------
+# Weight support
+# ---------------------------------------------------------------------------
+
+def test_parse_line_with_weight() -> None:
+    line = "2026-03-28 15:32 | job | w:0.7 | Got promoted | gmail"
+    result = ew._parse_line(line)
+    assert result is not None
+    assert result["weight"] == 0.7
+    assert result["summary"] == "Got promoted"
+    assert result["source"] == "gmail"
+
+
+def test_parse_line_without_weight_has_no_weight_key() -> None:
+    line = "2026-03-28 15:32 | job | Got promoted | gmail"
+    result = ew._parse_line(line)
+    assert result is not None
+    assert "weight" not in result
+    assert result["summary"] == "Got promoted"
+
+
+def test_append_event_with_weight(tmp_path: Path) -> None:
+    ss_path = tmp_path / "secondself" / "episodic.md"
+    out_path = tmp_path / "output" / "episodic.md"
+    with patch.object(ew, "SECONDSELF_PATH", ss_path), \
+         patch.object(ew, "_lock_path", lambda p: p.with_suffix(".md.lock")), \
+         patch.object(ew, "OUTPUT_PATH", out_path):
+        ew.append_event("Important event", "job", "agent", weight=0.8)
+    content = ss_path.read_text(encoding="utf-8")
+    assert "w:0.8" in content
+    lines = [l for l in content.splitlines()
+             if l.strip() and not l.startswith("#") and not l.startswith("Auto")]
+    parsed = ew._parse_line(lines[0])
+    assert parsed is not None
+    assert parsed["weight"] == 0.8
+    assert parsed["summary"] == "Important event"
+
+
+def test_append_event_without_weight(tmp_path: Path) -> None:
+    ss_path = tmp_path / "secondself" / "episodic.md"
+    out_path = tmp_path / "output" / "episodic.md"
+    with patch.object(ew, "SECONDSELF_PATH", ss_path), \
+         patch.object(ew, "_lock_path", lambda p: p.with_suffix(".md.lock")), \
+         patch.object(ew, "OUTPUT_PATH", out_path):
+        ew.append_event("Normal event", "social", "agent")
+    content = ss_path.read_text(encoding="utf-8")
+    assert "w:" not in content
+    lines = [l for l in content.splitlines()
+             if l.strip() and not l.startswith("#") and not l.startswith("Auto")]
+    parsed = ew._parse_line(lines[0])
+    assert parsed is not None
+    assert "weight" not in parsed
+    assert parsed["summary"] == "Normal event"
+
+
+def test_get_weighted_events_prefers_stored_weight(tmp_path: Path) -> None:
+    """Stored w:X.X should override the default time-bucket weight."""
+    now = datetime.now(timezone.utc)
+    recent_date = now.strftime("%Y-%m-%d %H:%M")
+
+    p = tmp_path / "episodic.md"
+    p.write_text(
+        "# Episodic Memory\nAuto-generated.\n"
+        f"{recent_date} | job | w:0.3 | Low weight despite recent | agent\n",
+        encoding="utf-8",
+    )
+    with patch.object(ew, "SECONDSELF_PATH", p):
+        events = ew.get_weighted_events(recent_n=10, total_n=50)
+
+    assert len(events) == 1
+    # Should use stored weight (0.3), not time-bucket default (1.0)
+    assert events[0]["weight"] == 0.3

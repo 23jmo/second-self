@@ -1,4 +1,4 @@
-"""Unit tests for auth/web_oauth.py."""
+"""Unit tests for auth/web_oauth.py (Google Identity Services)."""
 
 import json
 import time
@@ -20,18 +20,14 @@ def client() -> TestClient:
     return TestClient(wo.app)
 
 
-def test_firebase_config_returns_env_vars(
+def test_oauth_config_returns_client_id(
     client: TestClient, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("FIREBASE_API_KEY", "test-key")
-    monkeypatch.setenv("FIREBASE_AUTH_DOMAIN", "test.firebaseapp.com")
-    monkeypatch.setenv("FIREBASE_PROJECT_ID", "test-project")
-    resp = client.get("/auth/firebase-config")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id")
+    resp = client.get("/auth/oauth-config")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["apiKey"] == "test-key"
-    assert data["authDomain"] == "test.firebaseapp.com"
-    assert data["projectId"] == "test-project"
+    assert data["clientId"] == "test-client-id"
 
 
 def test_login_page_serves_html(client: TestClient) -> None:
@@ -67,7 +63,6 @@ def test_callback_signals_event(client: TestClient, tmp_path: Path) -> None:
     with patch.object(wo, "TOKEN_PATH", token_path):
         client.post("/auth/callback", json={
             "google_access_token": "tok",
-            "id_token": "id",
             "email": "a@b.com",
             "display_name": "A",
         })
@@ -134,6 +129,51 @@ def test_save_token_does_not_mutate_input(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Scope verification tests
+# ---------------------------------------------------------------------------
+
+def test_verify_token_scopes_success() -> None:
+    """Valid token with all required scopes should return the scope set."""
+    response_data = json.dumps({
+        "scope": "https://www.googleapis.com/auth/gmail.readonly "
+                 "https://www.googleapis.com/auth/calendar.readonly "
+                 "openid email profile",
+    }).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_data
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("auth.web_oauth.urllib.request.urlopen", return_value=mock_resp):
+        granted = wo._verify_token_scopes("test-token")
+
+    assert "https://www.googleapis.com/auth/gmail.readonly" in granted
+    assert "https://www.googleapis.com/auth/calendar.readonly" in granted
+
+
+def test_verify_token_scopes_missing_scope() -> None:
+    """Token missing required scopes should raise EnvironmentError."""
+    response_data = json.dumps({
+        "scope": "openid email profile",
+    }).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = response_data
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("auth.web_oauth.urllib.request.urlopen", return_value=mock_resp), \
+         pytest.raises(EnvironmentError, match="missing required scopes"):
+        wo._verify_token_scopes("test-token")
+
+
+def test_verify_token_scopes_network_error() -> None:
+    """Network error during verification should raise EnvironmentError."""
+    with patch("auth.web_oauth.urllib.request.urlopen", side_effect=Exception("timeout")), \
+         pytest.raises(EnvironmentError, match="Token verification failed"):
+        wo._verify_token_scopes("test-token")
+
+
+# ---------------------------------------------------------------------------
 # run_auth_server tests
 # ---------------------------------------------------------------------------
 
@@ -168,15 +208,11 @@ def test_run_auth_server_timeout() -> None:
 
 
 def test_validate_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FIREBASE_API_KEY", raising=False)
-    monkeypatch.delenv("FIREBASE_AUTH_DOMAIN", raising=False)
-    monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
-    with pytest.raises(EnvironmentError, match="FIREBASE_API_KEY"):
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    with pytest.raises(EnvironmentError, match="GOOGLE_CLIENT_ID"):
         wo._validate_env()
 
 
 def test_validate_env_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FIREBASE_API_KEY", "k")
-    monkeypatch.setenv("FIREBASE_AUTH_DOMAIN", "d")
-    monkeypatch.setenv("FIREBASE_PROJECT_ID", "p")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-id")
     wo._validate_env()  # should not raise

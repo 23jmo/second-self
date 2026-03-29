@@ -21,7 +21,7 @@ All profile files are written to `~/.secondself/` for consumption by the twin ag
 ```
 Gmail OAuth ──> Fetch Emails ──> Clean ──> Analyze (parallel) ──> Build Profiles
                                              |
-Firebase Auth ─> Calendar Fetch ─────────────┘
+Google Auth ──> Calendar Fetch ─────────────┘
                                              |
               Tavily Search ─────────────────┘
 ```
@@ -74,7 +74,7 @@ second-self/
 ├── utils/
 │   └── episodic_writer.py         # File-locked episodic memory writer (Layer 4)
 ├── static/
-│   └── login.html                 # Firebase popup auth page
+│   └── login.html                 # Google Identity Services auth page
 ├── output/                        # Local cache of all pipeline outputs
 └── tests/                         # 430+ unit tests
 ```
@@ -85,7 +85,7 @@ second-self/
 
 - Python 3.11+
 - A Google Cloud project with Gmail API and Calendar API enabled
-- A Firebase project for web-based OAuth
+- A Google Cloud project with OAuth 2.0 client credentials
 - Tavily API key
 - Anthropic API key
 
@@ -103,13 +103,10 @@ Create a `.env` file:
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=http://localhost:8080
-FIREBASE_API_KEY=
-FIREBASE_AUTH_DOMAIN=
-FIREBASE_PROJECT_ID=
 TAVILY_API_KEY=
 ANTHROPIC_API_KEY=
-USER_NAME=
-USER_EMAIL=
+USER_NAME=                # optional — auto-detected from Google sign-in
+USER_EMAIL=               # optional — auto-detected from Google sign-in
 ```
 
 ## Usage
