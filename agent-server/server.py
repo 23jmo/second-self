@@ -268,6 +268,8 @@ def main():
         import Quartz
         from PIL import Image
 
+        jpeg_buf = io.BytesIO()  # Reuse buffer across frames
+
         while True:
             try:
                 image_ref = Quartz.CGWindowListCreateImage(
@@ -287,17 +289,18 @@ def main():
                 raw_data = Quartz.CGDataProviderCopyData(data_provider)
 
                 img = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", bytes_per_row, 1)
-                img = img.convert("RGB")
                 img = img.resize((width // 2, height // 2))
+                img = img.convert("RGB")
 
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=60)
+                jpeg_buf.seek(0)
+                jpeg_buf.truncate()
+                img.save(jpeg_buf, format="JPEG", quality=60)
                 with _frame_lock:
-                    _latest_frame = buf.getvalue()
+                    _latest_frame = jpeg_buf.getvalue()
             except Exception as e:
                 print(f"[agent-server] Screenshot error: {e}")
                 time.sleep(0.5)
-            time.sleep(0.1)  # ~10 fps target
+            time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n[agent-server] Shutting down")
         server.shutdown()

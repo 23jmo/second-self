@@ -13,7 +13,7 @@ import pytest_asyncio
 import httpx
 from httpx import ASGITransport
 
-from server import app, current_job, job_lock, set_job_state, conversation_history
+from server import app, current_job, job_lock, set_job_state
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -29,7 +29,6 @@ async def reset_job_state():
         current_job["actions"] = []
         current_job["started_at"] = None
         current_job["message_queue"] = []
-    conversation_history.clear()
     yield
     # Also reset after test to prevent cross-test contamination
     async with job_lock:
@@ -39,7 +38,6 @@ async def reset_job_state():
         current_job["actions"] = []
         current_job["started_at"] = None
         current_job["message_queue"] = []
-    conversation_history.clear()
 
 
 @pytest_asyncio.fixture
@@ -199,7 +197,6 @@ class TestResetEndpoint:
             await set_job_state("thinking", task="busy")
             current_job["actions"] = [{"step": 1}]
             current_job["message_queue"] = ["queued msg"]
-        conversation_history.append({"role": "user", "content": "hello"})
 
         response = await client.post("/reset")
         assert response.status_code == 200
@@ -212,7 +209,6 @@ class TestResetEndpoint:
         assert current_job["task"] is None
         assert current_job["actions"] == []
         assert current_job["message_queue"] == []
-        assert conversation_history == []
 
     @pytest.mark.asyncio
     async def test_reset_from_error_state(self, client):

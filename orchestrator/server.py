@@ -239,8 +239,6 @@ current_job: dict = {
 }
 
 # Conversation history and cached profile kept across jobs
-conversation_history: list = []
-cached_profile: dict | None = None
 
 
 async def set_job_state(state: str, task: str | None = None, message: str | None = None) -> None:
@@ -940,7 +938,6 @@ async def chat(request: Request):
 @app.post("/reset")
 async def reset():
     """Reset all state for demo transitions."""
-    global cached_profile
     async with job_lock:
         current_job["id"] = None
         current_job["state"] = "idle"
@@ -948,8 +945,6 @@ async def reset():
         current_job["actions"] = []
         current_job["started_at"] = None
         current_job["message_queue"] = []
-    conversation_history.clear()
-    cached_profile = None
     print("[orchestrator] State reset to idle")
     return {"status": "ok", "message": "State cleared"}
 

@@ -144,20 +144,23 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
     private var session: URLSession?
     private var task: URLSessionDataTask?
     private var buffer = Data()
-    private let boundary = "--frame".data(using: .utf8)!
     private var isRunning = false
-
-    private let ports = [ServerConfig.agentServerPort]
-    private var currentPortIndex = 0
     private var retryTimer: Timer?
-
     private var frameCount = 0
+    private var lastFrameID: ObjectIdentifier?
+
+    // Pre-allocated JPEG markers (avoid heap alloc per frame)
+    private static let jpegSOI = Data([0xFF, 0xD8])
+    private static let jpegEOI = Data([0xFF, 0xD9])
+
+    // Background queue for JPEG decoding (keep main thread free for UI)
+    private let decodeQueue = DispatchQueue(label: "mjpeg.decode", qos: .userInitiated)
 
     func start() {
         guard !isRunning else { return }
         isRunning = true
         print("[VNC-PiP] Starting MJPEG streamer...")
-        connectToNextPort()
+        connect()
     }
 
     func stop() {
@@ -170,24 +173,19 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
         retryTimer = nil
     }
 
-    private func connectToNextPort() {
-        guard isRunning, currentPortIndex < ports.count else {
-            // All ports tried, retry from beginning after delay
-            currentPortIndex = 0
-            retryTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-                self?.connectToNextPort()
-            }
-            return
-        }
+    private func connect() {
+        guard isRunning else { return }
 
-        let port = ports[currentPortIndex]
-        let url = URL(string: "http://localhost:\(port)/stream")!
-        print("[VNC-PiP] Trying port \(port)...")
+        let url = URL(string: ServerConfig.agentStreamURL)!
+        print("[VNC-PiP] Connecting to \(url)...")
+
+        // Invalidate previous session to prevent leaks
+        session?.invalidateAndCancel()
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 3600
-        session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
+        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
 
         var request = URLRequest(url: url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -199,22 +197,21 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         buffer.append(data)
-        if buffer.count < 1000 {
-            print("[VNC-PiP] Received \(data.count) bytes (buffer: \(buffer.count))")
-        }
         extractFrames()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error = error {
-            print("[VNC-PiP] Stream error on port \(ports[min(currentPortIndex, ports.count-1)]): \(error.localizedDescription)")
-        } else {
-            print("[VNC-PiP] Stream ended cleanly")
+            print("[VNC-PiP] Stream error: \(error.localizedDescription)")
         }
         if isRunning {
-            currentPortIndex += 1
             buffer.removeAll()
-            connectToNextPort()
+            // Retry after delay
+            DispatchQueue.main.async { [weak self] in
+                self?.retryTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+                    self?.connect()
+                }
+            }
         }
     }
 
@@ -225,7 +222,7 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         if let http = response as? HTTPURLResponse {
-            print("[VNC-PiP] Connected! HTTP \(http.statusCode), Content-Type: \(http.allHeaderFields["Content-Type"] ?? "unknown")")
+            print("[VNC-PiP] Connected! HTTP \(http.statusCode)")
         }
         completionHandler(.allow)
     }
@@ -233,26 +230,26 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
     // MARK: - JPEG Frame Extraction
 
     private func extractFrames() {
-        while let jpegStart = buffer.firstRange(of: Data([0xFF, 0xD8])),
-              let jpegEnd = buffer[jpegStart.lowerBound...].firstRange(of: Data([0xFF, 0xD9])) {
+        while let jpegStart = buffer.firstRange(of: Self.jpegSOI),
+              let jpegEnd = buffer[jpegStart.lowerBound...].firstRange(of: Self.jpegEOI) {
 
-            let frameData = buffer[jpegStart.lowerBound...jpegEnd.upperBound - 1]
-
-            if let image = NSImage(data: Data(frameData)) {
-                currentFrame = image
-                frameCount += 1
-                if frameCount <= 3 || frameCount % 50 == 0 {
-                    print("[VNC-PiP] Frame \(frameCount) decoded (\(frameData.count) bytes, \(Int(image.size.width))x\(Int(image.size.height)))")
-                }
-            } else {
-                print("[VNC-PiP] Failed to decode JPEG frame (\(frameData.count) bytes)")
-            }
-
+            let frameData = Data(buffer[jpegStart.lowerBound...jpegEnd.upperBound - 1])
             buffer.removeSubrange(..<jpegEnd.upperBound)
+
+            // Decode JPEG off the main thread
+            decodeQueue.async { [weak self] in
+                guard let image = NSImage(data: frameData) else { return }
+                DispatchQueue.main.async {
+                    self?.currentFrame = image
+                    self?.frameCount += 1
+                    if let count = self?.frameCount, count <= 3 || count % 50 == 0 {
+                        print("[VNC-PiP] Frame \(count) (\(frameData.count / 1024)KB)")
+                    }
+                }
+            }
         }
 
         if buffer.count > 5_000_000 {
-            print("[VNC-PiP] Buffer overflow, clearing")
             buffer.removeAll()
         }
     }
