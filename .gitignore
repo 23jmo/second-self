@@ -32,6 +32,12 @@ Thumbs.db
 # Logs
 *.log
 *.err
+.gstack/
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+DerivedData/
 
 # Next.js
 .next/

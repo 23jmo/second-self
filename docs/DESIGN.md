@@ -1,7 +1,7 @@
 # Design: Second Self — Hackathon MVP
 
 Updated: 2026-03-28
-Branch: main
+Branch: jym2117/tab-54-core-app-notch-ui-orchestration-and-vnc-on
 Repo: second-self
 Status: APPROVED + IN PROGRESS
 Team: Johnathan + Mac
@@ -20,340 +20,272 @@ A macOS "digital twin" that creates a second user session running simultaneously
 6. Person gives a command → watches the twin execute it in VNC
 7. "Whoa" moment
 
-## Team / Work Split
-
-| Owner | Area | What |
-|-------|------|------|
-| **Mac** | Local plumbing | VNC (Vine Server :5901 + TigerVNC), Fast User Switching, computer use execution |
-| **Mac** | UI/UX | Notch menubar app (Swift/SwiftUI), input pill, VNC viewer embed |
-| **Both** | MCP connectors | Google Workspace, Notion, Slack integrations for the digital twin |
-| **Both** | Onboarding flow | Build an accurate second self: profiling, style fingerprinting, cookie cloning |
-| **Both** | Memory layer | Persistent context about who the user is, what they've done, how they think |
-
-## What's Proven (Phase 1 Complete)
-
-- Fast User Switching works on Tahoe (26.x) — two WindowServer processes
-- VNC works: Vine Server on :5901, TigerVNC client (Apple's Screen Sharing doesn't work for background sessions on localhost)
-- Agent Server runs in secondself's GUI session (:8421)
-- PyAutoGUI controls mouse/keyboard on secondself's display
-- `open -a` commands launch apps without AppleScript permissions
-- Dedalus Labs is the LLM brain (OpenAI-compatible API, not computer use)
-- API keys: Dedalus + Tavily configured in `.env`
-
----
-
 ## Architecture (Current)
 
 ```
 PRIMARY SESSION                         SECOND SELF SESSION
 ─────────────────                       ─────────────────────
 
-┌─────────────────────┐                 ┌──────────────────────────┐
-│  Menubar App (Mac)  │                 │  Agent Server (Python)   │
-│  Swift/SwiftUI      │                 │  port 8421               │
-│  ┌───────────────┐  │                 │                          │
-│  │ Input Pill    │──┼──HTTP :8420──►  │  BROWSER AGENT           │
-│  └───────────────┘  │                 │  agent-browser CLI       │
-│  ┌───────────────┐  │                 │  /browser/goto           │
-│  │ TigerVNC      │◄─┼──VNC :5901──── │  /browser/click @ref     │
-│  │ (live view)   │  │                 │  /browser/fill @ref      │
-│  └───────────────┘  │                 │  /browser/snapshot       │
-└────────┬────────────┘                 │                          │
-         │                              │  DESKTOP AGENT           │
-         ▼                              │  PyAutoGUI               │
-┌─────────────────────┐                 │  /tool/open_app          │
-│  Orchestrator       │                 │  /tool/click (pixels)    │
-│  (Python, port 8420)│                 │  /tool/type              │
-│                     │                 │  /tool/hotkey            │
-│  ┌───────────────┐  │  Dedalus API   │                          │
-│  │ Task Router   │──┼────────────►   │  MCP AGENT               │
-│  │ (browser vs   │  │  LLM brain    │  Google, Notion, Slack    │
-│  │  desktop vs   │◄─┼────────────   │  /mcp/google/*           │
-│  │  mcp)         │  │  tool calls   │  /mcp/notion/*           │
-│  └───────────────┘  │                │  /mcp/slack/*            │
-│                     │                │                          │
-│  ┌───────────────┐  │                │  Chrome visible in VNC   │
-│  │ Memory Layer  │  │                │  Vine Server daemon      │
-│  │ (user context)│  │                │  agent-browser daemon    │
-│  └───────────────┘  │                └──────────────────────────┘
-│                     │
-│  ┌───────────────┐  │
-│  │ Tavily        │  │
-│  │ Profiler      │  │
-│  └───────────────┘  │
-└─────────────────────┘
+┌──────────────────────────────┐
+│  SecondSelf.app (SwiftUI)    │
+│                              │
+│  ┌────────────────────────┐  │
+│  │ NotchOverlay (NSPanel)  │  │
+│  │ S1: Twin peek           │  │
+│  │ S2: Expanded + Twin     │  │
+│  │ S3: Full chat + VNC PiP │  │
+│  └────────────────────────┘  │
+│                              │
+│  ┌────────────────────────┐  │
+│  │ ChatViewModel           │  │          ┌──────────────────────┐
+│  │ SSE client ──────────────┼─────────► │ Orchestrator (:8420)  │
+│  │ Messages, Twin state    │  │ ◄─SSE── │ FastAPI + uvicorn     │
+│  │ Typewriter animation    │  │          │                      │
+│  └────────────────────────┘  │          │ POST /chat (SSE)      │
+│                              │          │ POST /command          │
+│  ┌────────────────────────┐  │          │ POST /profile          │
+│  │ VNCPipView (native)    │  │          │ POST /demo             │
+│  │ MJPEG ◄──────────────────┼───────── │ POST /reset            │
+│  │ from :8421/stream      │  │          │ GET  /health           │
+│  │ Quartz CoreGraphics    │  │          │ GET  /status           │
+│  └────────────────────────┘  │          │                      │
+│                              │          │ Job State Machine:     │
+│  Global Hotkey: Cmd+Shift+T  │          │ idle→thinking→working  │
+│  Audio: task/complete sounds │          │ →complete→idle         │
+└──────────────────────────────┘          │ Message queue when busy│
+                                          └──────────┬───────────┘
+                                                     │ HTTP
+                                                     ▼
+                                          ┌──────────────────────┐
+                                          │ Agent Server (:8421)  │
+                                          │ ThreadingHTTPServer   │
+                                          │ runs in secondself    │
+                                          │ GUI session           │
+                                          │                      │
+                                          │ BROWSER (browser-use) │
+                                          │ /browser/goto         │
+                                          │ /browser/click        │
+                                          │ /browser/fill         │
+                                          │ /browser/snapshot     │
+                                          │                      │
+                                          │ DESKTOP (PyAutoGUI)   │
+                                          │ /tool/click           │
+                                          │ /tool/type            │
+                                          │ /tool/hotkey          │
+                                          │ /tool/open_app        │
+                                          │                      │
+                                          │ STREAM (Quartz CG)    │
+                                          │ GET /stream (MJPEG)   │
+                                          │ Main-thread capture   │
+                                          │ ~10fps, JPEG q60      │
+                                          │                      │
+                                          │ Chrome visible in VNC │
+                                          │ Vine Server :5901     │
+                                          └──────────────────────┘
 ```
 
----
+## Key Components
+
+### SecondSelf.app (SwiftUI, macOS)
+
+The notch-resident UI. No dock icon (LSUIElement). Built with Swift Package Manager.
+
+- **NotchOverlayController** — NSPanel at statusBar+1 level, non-activating, 3 states (collapsed/expanded/fullChat) with spring animations
+- **ChatView** — ScrollView + LazyVStack of messages, auto-scroll, VNC PiP overlay
+- **ChatViewModel** — SSE client connecting to POST /chat, parses state/token/tool_call/tool_result/error events, manages Twin state machine
+- **TwinCharacterView** — Animated mascot with 5 states (idle/thinking/working/complete/error), procedural breathing/bobbing/wiggling
+- **VNCPipView** — Native URLSession MJPEG parser (no WKWebView), reads JPEG frames from /stream, olive-green glow when working
+- **AudioManager** — System sounds for task start, completion, typing clicks
+- **Global Hotkey** — Cmd+Shift+T toggles panel via NSEvent global monitor
+
+Auto-launches the orchestrator as a subprocess on app start. Agent-server runs separately in secondself's session.
+
+### Orchestrator (FastAPI, port 8420)
+
+The brain. Runs in the primary session. Bridges UI ↔ LLM ↔ Agent Server.
+
+- **FastAPI + uvicorn** — async, CORS middleware, SSE streaming
+- **Job state machine** — idle/thinking/working/complete/error with asyncio.Lock
+- **POST /chat** — SSE endpoint streaming state, token, tool_call, tool_result, error, ping events
+- **Message queue** — when busy, queued messages auto-process after current job completes
+- **POST /reset** — clears job state, conversation history, profile cache (for demo transitions)
+- **Dedalus API** — OpenAI-compatible, stream=true for token streaming
+- **Tavily API** — web profiling for instant stranger profiles
+- **27 passing pytest tests** covering state machine, SSE, error handling
+
+### Agent Server (ThreadingHTTPServer, port 8421)
+
+Runs in secondself's GUI session via `launchctl asuser`. Controls the second desktop.
+
+- **MJPEG stream** — Quartz CoreGraphics capture on main thread (~10fps), served to worker threads via shared buffer with threading.Lock
+- **Browser tools** — browser-use CLI via CDP (Chrome on :9222)
+- **Desktop tools** — PyAutoGUI for mouse, keyboard, app launching
+- **Main-thread architecture** — HTTP server runs in background thread, screenshot capture runs on main thread (Cocoa APIs require main thread)
 
 ## Three Agent Types
 
-The orchestrator routes tasks to the right agent based on what needs to happen.
+### 1. Browser Agent (browser-use)
 
-### 1. Browser Agent (agent-browser)
-
-**What:** Controls Chrome via Playwright with ref-based element selection. No pixel clicking, no screenshots for navigation. Fast and reliable.
-
-**When:** Any web task. Research, search, fill forms, read pages, navigate between sites.
-
-**How:** agent-browser CLI runs as a daemon in secondself's session. The Agent Server shells out to it. Chrome window is visible in VNC so the user watches it work.
-
-**Tools:**
-```
-browser_goto(url)          — navigate to URL
-browser_click(ref)         — click element by accessibility ref
-browser_fill(ref, text)    — fill input field
-browser_snapshot()         — get page structure with element refs
-browser_text()             — get page text content
-browser_press(key)         — press keyboard key (Enter, Tab, etc.)
-```
+Controls Chrome via Playwright with ref-based element selection. CLI commands: goto, click, fill, snapshot, screenshot, text, press. Chrome window visible in VNC/MJPEG stream.
 
 ### 2. Desktop Agent (PyAutoGUI)
 
-**What:** Controls mouse, keyboard, and desktop-level interactions. Opens apps, switches windows, takes screenshots of the full desktop.
+Controls mouse, keyboard, desktop-level interactions. Opens apps, switches windows, types text. Must run from within the GUI session.
 
-**When:** Non-browser tasks. Opening apps, arranging windows, interacting with native macOS apps (Notes, Finder, Calendar), desktop-level UI.
+### 3. MCP Agent (API-level, planned)
 
-**How:** PyAutoGUI runs in secondself's GUI session context. Must be started from within the GUI session (not via SSH or sudo).
+Direct API access to Google Workspace, Notion, Slack. Not yet implemented.
 
-**Tools:**
-```
-open_app(name)             — open any macOS app
-click(x, y)                — click at pixel coordinates
-type_text(text)            — type on keyboard
-hotkey(keys)               — keyboard shortcut (cmd+t, etc.)
-scroll(dy)                 — scroll up/down
-move_mouse(x, y)           — move cursor
-screenshot()               — capture full desktop (slow, use sparingly)
-```
+## SSE Event Protocol
 
-### 3. MCP Agent (API-level, no UI)
-
-**What:** Interacts with cloud services directly via their APIs, not through the browser UI. Faster, more reliable, no visual interaction needed.
-
-**When:** Reading/writing to Google Workspace, Notion, Slack. Checking email, creating docs, posting messages. Any task where API access is faster than browser UI.
-
-**How:** MCP (Model Context Protocol) servers connect the LLM to external services. Dedalus supports MCP servers natively. The twin uses the user's authenticated sessions.
-
-**Tools (planned):**
-```
-google_search(query)       — search Google via API
-google_docs_create(title)  — create a Google Doc
-google_calendar_check()    — check today's calendar
-notion_read(page_id)       — read a Notion page
-notion_create(title, body) — create a Notion page
-slack_send(channel, msg)   — send a Slack message
-slack_read(channel)        — read recent Slack messages
-```
-
-**Auth approach:** Firebase to bypass Google Cloud Console "unverified" screen. Auth0 for identity. Copy user's OAuth tokens or cookies to secondself's session.
-
-### Agent Router Logic
-
-```python
-def route_task(task: str, context: dict) -> str:
-    """Decide which agent handles a task."""
-    # If task involves a URL or web content → Browser Agent
-    # If task involves a cloud service with MCP → MCP Agent (faster)
-    # If task involves desktop apps or system actions → Desktop Agent
-    # If unclear → ask LLM to classify, default to Browser Agent
-```
-
-The LLM (via Dedalus) can also chain agents: "Research quantum computing (browser) → create a summary doc (MCP/Notion or desktop/Notes) → message the team about it (MCP/Slack)."
-
----
-
-## Onboarding Flow
-
-The goal: within 60 seconds of typing your name, the system knows enough about you to be useful. Within 5 minutes, it feels like it's been watching you work for weeks.
-
-### Tier 1: Instant Profile (seconds)
+The orchestrator streams events to the SwiftUI app via Server-Sent Events:
 
 ```
-User types name
-        │
-        ▼
-Tavily web search ──► structured profile JSON
-  "Johnathan Mo professional background"
-  "Johnathan Mo twitter LinkedIn github"
-        │
-        ▼
-LLM summarizes ──► { name, title, company, interests[], bio }
-        │
-        ▼
-Anticipatory twin setup ──► Chrome opens relevant tabs,
-  Notes creates a task list, desktop looks personalized
+event: state
+data: {"state": "thinking"}
+
+event: token
+data: {"text": "I'll search for..."}
+
+event: tool_call
+data: {"tool": "browser_goto", "args": {"url": "..."}, "step": 1}
+
+event: tool_result
+data: {"tool": "browser_goto", "result": {"status": "ok"}, "step": 1}
+
+event: state
+data: {"state": "complete"}
+
+event: error
+data: {"message": "Twin had trouble connecting"}
+
+event: ping
+data: {}
 ```
 
-This is what we demo at the booth. Fast, visual, impressive.
+## Tech Stack
 
-### Tier 2: Deep Profile (minutes, with user consent)
+| Component | Technology | Status |
+|-----------|-----------|--------|
+| Notch app | Swift + SwiftUI + AppKit (NSPanel) | **Built** |
+| VNC viewer | Native MJPEG parser (URLSession) | **Built** |
+| Orchestrator | FastAPI + uvicorn on :8420 | **Built** |
+| Agent Server | Python ThreadingHTTPServer on :8421 | **Built** |
+| Screen capture | Quartz CoreGraphics (main thread) | **Built** |
+| Browser agent | browser-use CLI via CDP | **Built** |
+| Desktop agent | PyAutoGUI | **Built** |
+| LLM brain | Dedalus Labs API (OpenAI-compat) | Configured |
+| Web profiling | Tavily API | Configured |
+| VNC server | Vine Server on :5901 | **Working** |
+| Session mgmt | sysadminctl + launchctl | **Working** |
+| Tests | pytest (27 tests) | **Passing** |
+| MCP agent | Google, Notion, Slack | Not started |
+| Memory layer | JSON files (MVP) | Not started |
+| Landing page | GoDaddy | Not started |
+
+## File Structure
 
 ```
-User grants access to:
-  ├── Cookies ──► clone to secondself (Chrome profile copy)
-  ├── Files ──► read access to Documents, Desktop, Downloads
-  ├── Email ──► analyze writing style, extract contacts/projects
-  ├── Twitter/social ──► analyze voice, interests, opinions
-  └── Calendar ──► understand schedule, priorities, deadlines
-        │
-        ▼
-Style Fingerprinting ──► { writing_style, vocabulary, tone,
-  emoji_usage, formality_level, typical_greeting, sign_off }
-        │
-        ▼
-Memory Layer populated with deep user context
+second-self/
+├── SecondSelf/                    # SwiftUI macOS app
+│   ├── Package.swift
+│   ├── SecondSelfApp.swift        # Entry point, subprocess launcher
+│   ├── NotchOverlayController.swift
+│   ├── Views/
+│   │   ├── ChatView.swift
+│   │   ├── ChatInputBar.swift
+│   │   ├── TwinMessageBubble.swift
+│   │   ├── UserMessageBubble.swift
+│   │   ├── ToolCallPill.swift
+│   │   ├── VNCPipView.swift       # Native MJPEG parser
+│   │   └── TwinCharacterView.swift
+│   ├── ViewModels/
+│   │   └── ChatViewModel.swift    # SSE client + state
+│   ├── Models/
+│   │   ├── ChatMessage.swift
+│   │   ├── TwinState.swift
+│   │   └── SSEParser.swift
+│   ├── Utilities/
+│   │   └── AudioManager.swift
+│   └── Assets.xcassets/Colors/    # 9 design system colors
+├── orchestrator/
+│   ├── server.py                  # FastAPI orchestrator
+│   ├── requirements.txt           # fastapi, uvicorn, httpx, pytest
+│   └── test_server.py             # 27 tests
+├── agent-server/
+│   ├── server.py                  # ThreadingHTTPServer + Quartz capture
+│   └── screenshot.py              # Standalone screenshot utility
+├── setup/
+│   ├── provision.sh               # One-shot setup for secondself user
+│   ├── update-agent-server.sh     # Copy updated code to secondself
+│   ├── ai.secondself.agent.plist  # LaunchAgent for agent-server
+│   ├── ai.secondself.orchestrator.plist
+│   ├── ai.secondself.vine.plist   # LaunchAgent for Vine VNC
+│   └── ai.secondself.chrome.plist # LaunchAgent for Chrome CDP
+├── docs/
+│   ├── DESIGN.md                  # This file
+│   └── SPEC-agent-browser-integration.md
+├── DESIGN.md                      # Design system (colors, typography, motion)
+├── start-agent-server.sh          # Dev script: start agent-server in secondself
+├── test-stream-viewer.sh          # Dev script: test MJPEG stream
+└── .env                           # API keys (gitignored)
 ```
 
-### Tier 3: Continuous Learning (ongoing, post-hackathon)
+## Running the App
 
-The twin watches what the user does and learns patterns. RL-based improvement. Prime Intellect or Modal for training.
+### Development
 
-### Cookie Cloning (Tier 2)
-
-Copy the user's Chrome cookies to secondself's Chrome profile so the twin is logged into the same services:
-
+Terminal 1 — start agent-server in secondself's session:
 ```bash
-# Chrome cookies location
-PRIMARY=~/Library/Application\ Support/Google/Chrome/Default/Cookies
-SECOND=/Users/secondself/Library/Application\ Support/Google/Chrome/Default/Cookies
-
-# Copy (Chrome must be closed in secondself session)
-sudo cp "$PRIMARY" "$SECOND"
-sudo chown secondself:staff "$SECOND"
+bash start-agent-server.sh
 ```
 
-This gives the twin access to Gmail, Google Docs, Notion, Slack, etc. without re-authenticating.
-
-### File Permission Sharing
-
-Grant secondself read access to the user's directories:
-
+Terminal 2 — build and run the app (auto-starts orchestrator):
 ```bash
-# Grant read access to specific dirs
-chmod o+rx ~/Documents ~/Desktop ~/Downloads
-# Or use ACLs for more granular control:
-sudo chmod +a "secondself allow read,readattr,readextattr,readsecurity,list,search" ~/Documents
+cd SecondSelf && swift build && swift run
 ```
 
----
+### Prerequisites
+- secondself user created and logged in once (for GUI session)
+- Screen Recording permission granted for python3 in secondself's session
+- Vine Server installed and running on :5901
+- API keys in `.env` (DEDALUS_API_KEY, TAVILY_API_KEY)
 
-## Memory Layer
-
-The memory layer is what makes the twin feel like it actually knows you, not just Googled you once.
-
-### Architecture
-
+### VNC sanity check
+```bash
+open -a TigerVNC --args localhost:5901
 ```
-┌─────────────────────────────────────────────┐
-│               MEMORY LAYER                   │
-│                                              │
-│  ┌──────────────┐  ┌──────────────────────┐ │
-│  │ User Profile  │  │ Session Memory       │ │
-│  │ (persistent)  │  │ (current session)    │ │
-│  │               │  │                      │ │
-│  │ name          │  │ current_task         │ │
-│  │ title         │  │ open_tabs[]          │ │
-│  │ company       │  │ recent_actions[]     │ │
-│  │ interests[]   │  │ conversation[]       │ │
-│  │ writing_style │  │ errors_encountered[] │ │
-│  │ contacts[]    │  │ files_accessed[]     │ │
-│  │ projects[]    │  │                      │ │
-│  │ preferences{} │  │                      │ │
-│  └──────────────┘  └──────────────────────┘ │
-│                                              │
-│  ┌──────────────┐  ┌──────────────────────┐ │
-│  │ Task History  │  │ Style Model          │ │
-│  │ (what twin    │  │ (how user writes)    │ │
-│  │  has done)    │  │                      │ │
-│  │               │  │ tone: casual         │ │
-│  │ task_log[]    │  │ emoji: rare          │ │
-│  │ success_rate  │  │ greeting: "hey"      │ │
-│  │ avg_duration  │  │ formality: low       │ │
-│  │ common_tasks  │  │ vocabulary: tech     │ │
-│  └──────────────┘  └──────────────────────┘ │
-└─────────────────────────────────────────────┘
-```
-
-### Storage (MVP)
-
-For hackathon: JSON files on disk. No database needed.
-
-```
-/Users/secondself/second-self/memory/
-├── profile.json          # User profile (from Tavily + enrichment)
-├── session.json          # Current session state
-├── task_history.json     # Log of all tasks executed
-└── style.json            # Writing style model
-```
-
-The orchestrator reads/writes these files. Every agent action updates session memory. The LLM gets relevant memory injected into its system prompt so it has context.
-
-### Memory in the System Prompt
-
-```python
-def build_system_prompt(memory: dict) -> str:
-    return f"""You are {memory['profile']['name']}'s digital twin.
-
-You know:
-- They work as {memory['profile']['title']} at {memory['profile']['company']}
-- Their interests: {', '.join(memory['profile']['interests'])}
-- Their writing style: {memory['style']['tone']}, {memory['style']['formality']}
-- Current session: {memory['session']['current_task']}
-- Recent actions: {memory['session']['recent_actions'][-5:]}
-
-Act as them. Use their voice. Prioritize what matters to them."""
-```
-
-### Post-Hackathon: MongoDB Atlas
-
-Persistent storage across sessions. Vector search for semantic memory retrieval. User profiles, task history, embeddings of past interactions.
-
----
-
-## Tech Stack (Updated)
-
-| Component | Technology | Owner | Status |
-|-----------|-----------|-------|--------|
-| Menubar app | Swift + SwiftUI + AppKit | Mac | Not started |
-| VNC viewer | TigerVNC (Vine Server on :5901) | Mac | **Working** |
-| Agent Server | Python HTTP on :8421 | Both | **Working** |
-| Orchestrator | Python HTTP on :8420 | Both | Built, needs testing |
-| Browser agent | agent-browser (Vercel Labs) | Both | Next step |
-| Desktop agent | PyAutoGUI | Both | **Working** |
-| MCP agent | Dedalus MCP servers | Both | Not started |
-| LLM brain | Dedalus Labs API (OpenAI-compat) | Both | Configured |
-| Web profiling | Tavily API | Both | Configured |
-| Memory layer | JSON files (MVP), MongoDB Atlas (later) | Both | Not started |
-| Auth | Auth0 | Both | Not started |
-| Session mgmt | sysadminctl + launchctl | Mac | **Working** |
-| Landing page | GoDaddy | Mac | Not started |
 
 ## What's CUT for MVP
 
 - RL training (Prime Intellect/Modal) — post-hackathon
-- Lava gateway — post-hackathon
 - MongoDB Atlas — post-hackathon (JSON files for now)
 - Style fingerprinting — Tier 2 onboarding, only if time
-- File permission sharing — Tier 2, only if time
 - Cookie cloning — Tier 2, only if time
 - App notarization — unsigned, use `xattr -cr` bypass
+- Voice input — stretch goal
+- MCP integrations — post-hackathon
 
-## Known Issues / Learnings from Phase 1
+## Known Issues / Learnings
 
-1. **ARDAgent kickstart is dead** on macOS 12.1+. Screen Sharing must be enabled via GUI.
-2. **`vnc://localhost` connects to YOUR session**, not the background user. Use Vine Server on :5901 + TigerVNC.
-3. **Apple's Screen Sharing app doesn't work** with Vine Server. TigerVNC does.
-4. **`su -l` can't run GUI commands.** Use `launchctl asuser` or start processes from within the GUI session.
-5. **PyAutoGUI must run from the GUI session** — starting via SSH or sudo runs it against the wrong display.
-6. **Dedalus is NOT computer use** — it's an MCP platform / LLM gateway. Use it as the brain, build your own tools.
-7. **Fast User Switching on Tahoe is janky** — may need multiple attempts to switch.
+1. **pyautogui.screenshot() deadlocks in threads** — Cocoa APIs need the main thread. Fixed by running capture on main thread, HTTP server in background thread.
+2. **JPEG doesn't support RGBA** — pyautogui returns RGBA screenshots. Must convert to RGB before JPEG encode.
+3. **Xcode Python 3.9 is broken** — /usr/bin/python3 points to Xcode's Python 3.9 which can't build pyobjc. Use /opt/homebrew/bin/python3.
+4. **launchctl asuser vs sudo -u** — `sudo -u secondself` runs as the user but in primary display context. `launchctl asuser 506` runs in secondself's actual GUI session.
+5. **Zombie TCP sockets** — killed processes leave TIME_WAIT sockets. Use `allow_reuse_address = True` and `sudo pkill -9` before restart.
+6. **URLSession MJPEG parsing** — WKWebView blocks localhost HTTP (ATS). Native URLSession with JPEG marker scanning (FFD8/FFD9) works reliably.
+7. **Quartz CoreGraphics is 5x faster than pyautogui** for screenshots (~100ms vs ~500ms).
 
 ## Success Criteria
 
+- [x] SwiftUI notch app with chat interface
+- [x] SSE streaming from orchestrator to app
+- [x] MJPEG live desktop feed (Quartz CoreGraphics)
+- [x] Twin character with animated states
+- [x] FastAPI orchestrator with job state machine
+- [x] 27 passing backend tests
 - [ ] Full demo loop: name → profile → twin setup → command → watch it work (2-3 min)
 - [ ] Demo succeeds 8/10 cold runs with different names
-- [ ] Browser agent works (agent-browser controls Chrome visibly in VNC)
 - [ ] At least one MCP integration works (Google, Notion, or Slack)
 - [ ] Memory layer persists across commands within a session
 - [ ] No visible crashes during demo
