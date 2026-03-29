@@ -190,7 +190,7 @@ struct CompactTrailingContent: View {
                 withAnimation(.ssMicro) { showCompletionBadge = true }
                 Task {
                     try? await Task.sleep(for: .seconds(2))
-                    withAnimation(.easeOut(duration: 0.5)) { showCompletionBadge = false }
+                    withAnimation(.ssContentDismiss) { showCompletionBadge = false }
                 }
             }
         }

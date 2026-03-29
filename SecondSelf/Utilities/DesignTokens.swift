@@ -61,6 +61,10 @@ extension Animation {
     static let ssGlowPulse = Animation.easeInOut(duration: 2.5)
     /// Scroll to latest message
     static let ssScrollSpring = Animation.spring(response: 0.3, dampingFraction: 0.9)
+    /// Content dismiss: fade out for badges and transient UI
+    static let ssContentDismiss = Animation.easeOut(duration: 0.5)
+    /// LIVE indicator blink
+    static let ssLiveBlink = Animation.easeInOut(duration: 1.0)
 }
 
 // MARK: - Transition Tokens

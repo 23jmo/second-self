@@ -69,7 +69,7 @@ struct VNCPipView: View {
         .scaleEffect(isHovered ? 1.02 : 1.0)
         .animation(.ssMicro, value: isHovered)
         .animation(.ssGlowPulse.repeatForever(autoreverses: true), value: glowPhase)
-        .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: livePhase)
+        .animation(.ssLiveBlink.repeatForever(autoreverses: true), value: livePhase)
         .onHover { hovering in
             isHovered = hovering
         }

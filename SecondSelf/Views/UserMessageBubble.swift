@@ -37,9 +37,13 @@ struct UserMessageBubble: View {
         }
     }
 
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
+
     private var formattedTime: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: timestamp)
+        Self.timeFormatter.string(from: timestamp)
     }
 }

@@ -127,10 +127,10 @@ final class NotchOverlayController: NSObject {
             // If the user manually opened full chat (stage 2), leave it alone.
             if chatViewModel.expansionStage == 1 {
                 autoCollapseTask?.cancel()
-                autoCollapseTask = Task {
+                autoCollapseTask = Task { [weak self] in
                     try? await Task.sleep(for: .seconds(3))
                     guard !Task.isCancelled else { return }
-                    self.collapse()
+                    self?.collapse()
                 }
             }
 
