@@ -1,11 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { initializeApp } from "firebase/app";
-import { getAuth, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
+import { useUser } from "@auth0/nextjs-auth0";
 import MascotFullBody from "@/components/mascot/MascotFullBody";
 import Button from "@/components/ui/Button";
-import { getFirebaseConfig, postAuthCallback } from "@/lib/api";
 
 interface WelcomeScreenProps {
   onNext: () => void;
@@ -13,48 +10,17 @@ interface WelcomeScreenProps {
 }
 
 export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const { user, isLoading } = useUser();
 
-  const handleClick = async () => {
-    setLoading(true);
-    setError("");
-
-    try {
-      // 1. Get Firebase config from backend
-      const config = await getFirebaseConfig();
-      const app = initializeApp(config);
-      const auth = getAuth(app);
-
-      // 2. Google sign-in popup with required scopes
-      const provider = new GoogleAuthProvider();
-      provider.addScope("https://www.googleapis.com/auth/gmail.readonly");
-      provider.addScope("https://www.googleapis.com/auth/gmail.send");
-      provider.addScope("https://www.googleapis.com/auth/calendar.readonly");
-      provider.addScope("https://www.googleapis.com/auth/calendar.events");
-      provider.addScope("https://www.googleapis.com/auth/documents");
-      provider.addScope("https://www.googleapis.com/auth/presentations");
-      provider.addScope("https://www.googleapis.com/auth/drive.file");
-
-      const result = await signInWithPopup(auth, provider);
-
-      // 3. Extract tokens
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      const googleAccessToken = credential?.accessToken ?? "";
-      const idToken = await result.user.getIdToken();
-      const email = result.user.email ?? "";
-      const name = result.user.displayName ?? "";
-
-      // 4. Send to backend to create session
-      const resp = await postAuthCallback(idToken, googleAccessToken, email, name);
-      onSession(resp.session_id, email);
-
-      // 5. Advance wizard
+  const handleClick = () => {
+    if (user) {
+      // Already logged in — proceed directly
+      const email = user.email ?? "";
+      onSession("auth0", email);
       onNext();
-    } catch (err) {
-      console.error("Auth failed:", err);
-      setError(err instanceof Error ? err.message : "Sign-in failed. Try again.");
-      setLoading(false);
+    } else {
+      // Redirect to Auth0 login
+      window.location.href = "/auth/login?returnTo=/";
     }
   };
 
@@ -74,12 +40,8 @@ export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps)
           </p>
         </div>
 
-        {error && (
-          <p className="text-red-500 text-sm text-center">{error}</p>
-        )}
-
-        <Button onClick={handleClick} disabled={loading}>
-          {loading ? "signing in..." : "let\u0027s build you"}
+        <Button onClick={handleClick} disabled={isLoading}>
+          {isLoading ? "signing in..." : "let\u0027s build you"}
         </Button>
       </div>
     </div>

@@ -99,7 +99,7 @@ def _list_message_ids(service: Any, label: str, cap: int) -> list[str]:
             if exc.resp.status in (401, 403):
                 logger.error(
                     "Gmail API error (%d). Ensure the Gmail API is enabled in your "
-                    "Google Cloud Console, then delete ~/.secondself/firebase_token.json and re-run.",
+                    "Google Cloud Console, then delete ~/.secondself/google_token.json and re-run.",
                     exc.resp.status,
                 )
                 raise
@@ -227,7 +227,7 @@ def _batch_get_messages(
             if exc.resp.status in (401, 403):
                 logger.error(
                     "Gmail API error (%d). Ensure the Gmail API is enabled in your "
-                    "Google Cloud Console, then delete ~/.secondself/firebase_token.json and re-run.",
+                    "Google Cloud Console, then delete ~/.secondself/google_token.json and re-run.",
                     exc.resp.status,
                 )
                 raise
@@ -236,7 +236,7 @@ def _batch_get_messages(
         if auth_errors:
             logger.error(
                 "Gmail credentials expired or revoked. "
-                "Delete ~/.secondself/firebase_token.json and re-run."
+                "Delete ~/.secondself/google_token.json and re-run."
             )
             raise auth_errors[0]
 

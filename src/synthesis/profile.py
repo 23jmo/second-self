@@ -1,19 +1,17 @@
-"""Claude synthesis — raw data becomes a second self.
+"""Gemini synthesis — raw data becomes a second self.
 
 Takes emails, calendar events, and Tavily results, feeds them into
-one Claude call, and outputs a structured SecondSelfProfile.
+one Gemini call, and outputs a structured SecondSelfProfile.
 """
 
 import json
-import os
-
-import anthropic
 
 from src.models.schemas import (
     CalendarEvent,
     EmailMessage,
     SecondSelfProfile,
 )
+from src.synthesis.gemini_client import call_gemini_async, _strip_json_fences
 
 SYNTHESIS_PROMPT = """\
 You are building a digital twin profile for an AI agent that will act on this person's behalf.
@@ -64,8 +62,6 @@ async def build_second_self(
     tavily_results: str,
 ) -> SecondSelfProfile:
     """Synthesize a second-self profile from all collected data."""
-    model = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
-
     emails_text = "\n\n".join(
         f"To: {e.to}\nSubject: {e.subject}\n{e.body}" for e in emails[:50]
     )
@@ -88,20 +84,8 @@ async def build_second_self(
         tavily_results=tavily_results,
     )
 
-    client = anthropic.AsyncAnthropic()
-
-    response = await client.messages.create(
-        model=model,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    raw = response.content[0].text
-
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1]  # remove first line
-        raw = raw.rsplit("```", 1)[0]  # remove closing fence
+    raw = await call_gemini_async(prompt, max_tokens=1500, temperature=0)
+    raw = _strip_json_fences(raw)
 
     profile_data = json.loads(raw)
     return SecondSelfProfile(**profile_data)

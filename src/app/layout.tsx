@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DM_Sans } from "next/font/google";
+import { Auth0Provider } from "@auth0/nextjs-auth0";
 import "./globals.css";
 
 const dmSans = DM_Sans({
@@ -21,7 +22,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${dmSans.className} antialiased`}>
-        {children}
+        <Auth0Provider>
+          {children}
+        </Auth0Provider>
       </body>
     </html>
   );

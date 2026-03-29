@@ -4,7 +4,7 @@ google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
-firebase-admin
+google-genai
 requests
 httpx
 anthropic

@@ -37,7 +37,7 @@ def test_login_page_serves_html(client: TestClient) -> None:
 
 
 def test_callback_saves_token(client: TestClient, tmp_path: Path) -> None:
-    token_path = tmp_path / "firebase_token.json"
+    token_path = tmp_path / "google_token.json"
     wo._auth_event = MagicMock()
     with patch.object(wo, "TOKEN_PATH", token_path):
         resp = client.post("/auth/callback", json={
@@ -56,7 +56,7 @@ def test_callback_saves_token(client: TestClient, tmp_path: Path) -> None:
 
 
 def test_callback_signals_event(client: TestClient, tmp_path: Path) -> None:
-    token_path = tmp_path / "firebase_token.json"
+    token_path = tmp_path / "google_token.json"
     import threading
     event = threading.Event()
     wo._auth_event = event
@@ -111,17 +111,17 @@ def test_is_token_valid_expired() -> None:
 
 
 def test_save_token_writes_atomically(tmp_path: Path) -> None:
-    token_path = tmp_path / "firebase_token.json"
+    token_path = tmp_path / "google_token.json"
     with patch.object(wo, "TOKEN_PATH", token_path):
         result = wo._save_token({"access_token": "test"})
     assert token_path.exists()
-    assert not (tmp_path / "firebase_token.tmp").exists()
+    assert not (tmp_path / "google_token.tmp").exists()
     assert result["access_token"] == "test"
     assert "saved_at" in result
 
 
 def test_save_token_does_not_mutate_input(tmp_path: Path) -> None:
-    token_path = tmp_path / "firebase_token.json"
+    token_path = tmp_path / "google_token.json"
     original = {"access_token": "test"}
     with patch.object(wo, "TOKEN_PATH", token_path):
         wo._save_token(original)

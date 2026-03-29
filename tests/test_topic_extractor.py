@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -184,56 +184,39 @@ def test_save_topics_roundtrip(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _call_claude
+# _call_gemini
 # ---------------------------------------------------------------------------
 
-def test_call_claude_parses_json() -> None:
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text='{"topics": []}')]
-    mock_client.return_value.messages.create.return_value = mock_response
-
-    with patch("analyze.topic_extractor.anthropic.Anthropic", mock_client), \
-         patch("analyze.topic_extractor.load_dotenv"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-        result = te._call_claude("prompt", "text")
+def test_call_gemini_parses_json() -> None:
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"topics": []}), \
+         patch("analyze.topic_extractor.load_dotenv"):
+        result = te._call_gemini("prompt", "text")
     assert result == {"topics": []}
 
 
-def test_call_claude_retries_on_non_json() -> None:
-    mock_client = MagicMock()
-    bad_response = MagicMock()
-    bad_response.content = [MagicMock(text="not json")]
-    good_response = MagicMock()
-    good_response.content = [MagicMock(text='{"topics": []}')]
-    mock_client.return_value.messages.create.side_effect = [bad_response, good_response]
-
-    with patch("analyze.topic_extractor.anthropic.Anthropic", mock_client), \
-         patch("analyze.topic_extractor.load_dotenv"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-        result = te._call_claude("prompt", "text")
+def test_call_gemini_retries_on_non_json() -> None:
+    # Retry logic is now handled inside call_gemini_json; test that
+    # _call_gemini passes through whatever call_gemini_json returns
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={"topics": []}), \
+         patch("analyze.topic_extractor.load_dotenv"):
+        result = te._call_gemini("prompt", "text")
     assert result == {"topics": []}
-    assert mock_client.return_value.messages.create.call_count == 2
 
 
-def test_call_claude_returns_empty_after_two_failures() -> None:
-    mock_client = MagicMock()
-    bad_response = MagicMock()
-    bad_response.content = [MagicMock(text="not json")]
-    mock_client.return_value.messages.create.return_value = bad_response
-
-    with patch("analyze.topic_extractor.anthropic.Anthropic", mock_client), \
-         patch("analyze.topic_extractor.load_dotenv"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-        result = te._call_claude("prompt", "text")
+def test_call_gemini_returns_empty_after_two_failures() -> None:
+    # call_gemini_json returns {} on parse failure after retries
+    with patch("src.synthesis.gemini_client.call_gemini_json", return_value={}), \
+         patch("analyze.topic_extractor.load_dotenv"):
+        result = te._call_gemini("prompt", "text")
     assert result == {}
 
 
-def test_call_claude_missing_api_key() -> None:
+def test_call_gemini_missing_api_key() -> None:
     with patch("analyze.topic_extractor.load_dotenv"), \
-         patch.dict("os.environ", {}, clear=True):
-        with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
-            te._call_claude("prompt", "text")
+         patch("src.synthesis.gemini_client.call_gemini_json",
+               side_effect=EnvironmentError("GEMINI_API_KEY must be set in .env")):
+        with pytest.raises(EnvironmentError, match="GEMINI_API_KEY"):
+            te._call_gemini("prompt", "text")
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +259,7 @@ def test_extract_topics_full_pipeline(tmp_path: Path) -> None:
     }
     with patch.object(te, "OUTPUT_PATH", output), \
          patch("analyze.topic_extractor.load_dotenv"), \
-         patch("analyze.topic_extractor._call_claude", return_value=mock_response):
+         patch("analyze.topic_extractor._call_gemini", return_value=mock_response):
         result = te.extract_topics(emails)
 
     # "Bug Tracking" should be filtered (low + freq < 3)
@@ -295,6 +278,6 @@ def test_extract_topics_handles_bad_llm_response(tmp_path: Path) -> None:
     emails = [_email("SENT", "Test", "Body")]
     with patch.object(te, "OUTPUT_PATH", output), \
          patch("analyze.topic_extractor.load_dotenv"), \
-         patch("analyze.topic_extractor._call_claude", return_value={"topics": "not a list"}):
+         patch("analyze.topic_extractor._call_gemini", return_value={"topics": "not a list"}):
         result = te.extract_topics(emails)
     assert result == []

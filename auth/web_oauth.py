@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-TOKEN_PATH = Path.home() / ".secondself" / "firebase_token.json"
+TOKEN_PATH = Path.home() / ".secondself" / "google_token.json"
 _EXPIRY_SAFETY_MARGIN_SECONDS = 60
 _CALLBACK_TIMEOUT_SECONDS = 120
 _PORT = 8080
@@ -97,7 +97,7 @@ def _verify_token_scopes(access_token: str) -> set[str]:
     if missing:
         raise EnvironmentError(
             f"Token is missing required scopes: {', '.join(sorted(missing))}. "
-            "Delete ~/.secondself/firebase_token.json and re-authenticate."
+            "Delete ~/.secondself/google_token.json and re-authenticate."
         )
     return granted
 

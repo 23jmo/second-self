@@ -2,8 +2,7 @@
 
 Endpoints:
   GET  /health          — health check
-  GET  /auth/login      — Firebase login page
-  GET  /auth/callback   — OAuth callback
+  POST /auth/callback   — receive Auth0 session info
   GET  /auth/status     — check auth
   POST /onboard         — run the full pipeline → SecondSelfProfile
   POST /chat            — chat with the digital twin (tool use enabled)
@@ -20,7 +19,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Cookie, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.auth.firebase_oauth import router as auth_router
+from src.auth.auth0_oauth import router as auth_router
 from src.auth.token_store import get_session, get_latest_session
 from src.connectors.tavily import search_user
 from src.connectors.gmail import get_sent_emails

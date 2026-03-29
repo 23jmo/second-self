@@ -4,7 +4,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        source: "/api/:path*",
+        // Proxy all /api/* requests to FastAPI EXCEPT /auth/* (handled by Auth0 middleware)
+        source: "/api/:path((?!auth).*)",
         destination: "http://localhost:8000/:path*",
       },
     ];
