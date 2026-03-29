@@ -42,6 +42,13 @@ struct ChatInputBar: View {
                 .stroke(isFocused ? Color.ssTwinGreen.opacity(0.4) : Color.clear, lineWidth: 1)
         )
         .animation(.ssMicro, value: isFocused)
+        .onAppear {
+            // Delay focus request so the panel animation settles
+            // and the view is fully in the responder chain
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                isFocused = true
+            }
+        }
     }
 
     private var canSend: Bool {
