@@ -12,10 +12,6 @@ final class ChatViewModel: ObservableObject {
     @Published var inputText: String = ""
     @Published var isVNCExpanded: Bool = false
 
-    // Shared MJPEG streamer, owned here so both PiP and expanded views
-    // observe the same stream. Views receive this as @ObservedObject.
-    let mjpegStreamer = MJPEGStreamer()
-
     // The last tool action name from SSE events, shown in VNC bottom bar
     @Published var currentToolAction: String = ""
 
@@ -50,7 +46,7 @@ final class ChatViewModel: ObservableObject {
         let welcome = ChatMessage(
             id: UUID(),
             sender: .twin,
-            content: .text("Hello. I'm your Second Self. What would you like me to do?"),
+            content: .text("hey, poke here. what do you need?"),
             timestamp: Date()
         )
         messages.append(welcome)
