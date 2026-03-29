@@ -43,15 +43,36 @@ echo ""
 
 # ─── Step 3: Install Python dependencies ───
 echo "[3/10] Installing Python dependencies..."
-sudo -u "$SECOND_USER" /usr/bin/python3 -m pip install --user --break-system-packages \
-    pyautogui Pillow 2>&1 | tail -3 || {
+# Use /opt/homebrew/bin/python3 to match the LaunchAgent Python path.
+# Packages installed under /usr/bin/python3 are invisible to Homebrew Python.
+PYTHON="/opt/homebrew/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="/usr/local/bin/python3"
+fi
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="/usr/bin/python3"
+    echo "  ⚠️  Homebrew Python not found, falling back to system Python."
+fi
+echo "  Using: $PYTHON"
+
+sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
+    pyautogui Pillow pyobjc-framework-Quartz 2>&1 | tail -3 || {
     echo "  ⚠️  pip install failed. May need manual install in secondself session."
 }
+
+# Install orchestrator dependencies (anthropic, fastapi, uvicorn, etc.)
+if [ -f "$REPO_DIR/orchestrator/requirements.txt" ]; then
+    echo "  Installing orchestrator deps..."
+    sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
+        -r "$REPO_DIR/orchestrator/requirements.txt" 2>&1 | tail -3 || {
+        echo "  ⚠️  orchestrator deps install failed."
+    }
+fi
 echo ""
 
 # ─── Step 4: Install browser-use CLI ───
 echo "[4/10] Installing browser-use CLI..."
-sudo -H -u "$SECOND_USER" /usr/bin/python3 -m pip install --user --break-system-packages \
+sudo -H -u "$SECOND_USER" "$PYTHON" -m pip install --user --break-system-packages \
     "browser-use[cli]" 2>&1 | tail -3 || {
     echo "  ⚠️  browser-use install failed."
 }
@@ -62,16 +83,16 @@ sudo -H -u "$SECOND_USER" bash -c 'cd /tmp && browser-use install' 2>&1 | tail -
 }
 echo ""
 
-# ─── Step 5: Clear quarantine on Vine Server ───
-echo "[5/10] Clearing quarantine on Vine Server..."
+# ─── Step 5: Clear quarantine on Vine Server (optional) ───
+echo "[5/10] Checking Vine Server..."
 if [ -d "/Applications/Vine Server.app" ]; then
     sudo xattr -cr "/Applications/Vine Server.app"
-    echo "  Done."
+    echo "  Vine Server found, quarantine cleared."
+    VINE_AVAILABLE=true
 else
-    echo "  ⚠️  Vine Server not found. Install it first:"
-    echo "     brew install --cask vine-server"
-    echo "     Then re-run this script."
-    exit 1
+    echo "  Vine Server not installed (optional, MJPEG streaming works without it)."
+    echo "  To install later: brew install --cask vine-server"
+    VINE_AVAILABLE=false
 fi
 echo ""
 
@@ -80,12 +101,15 @@ echo "[6/10] Installing LaunchAgents..."
 LAUNCH_DIR="$SECOND_HOME/Library/LaunchAgents"
 sudo mkdir -p "$LAUNCH_DIR"
 sudo cp "$REPO_DIR/setup/ai.secondself.agent.plist" "$LAUNCH_DIR/"
-sudo cp "$REPO_DIR/setup/ai.secondself.vine.plist" "$LAUNCH_DIR/"
 sudo cp "$REPO_DIR/setup/ai.secondself.chrome.plist" "$LAUNCH_DIR/"
-sudo chown -R "$SECOND_USER:staff" "$LAUNCH_DIR"
 echo "  Installed: ai.secondself.agent (Agent Server on :8421)"
-echo "  Installed: ai.secondself.vine (Vine VNC on :5901)"
 echo "  Installed: ai.secondself.chrome (Chrome with CDP on :9222)"
+if [ "$VINE_AVAILABLE" = true ]; then
+    sudo cp "$REPO_DIR/setup/ai.secondself.vine.plist" "$LAUNCH_DIR/"
+    echo "  Installed: ai.secondself.vine (Vine VNC on :5901)"
+fi
+# Note: orchestrator is NOT a LaunchAgent — the SwiftUI app launches it as a subprocess.
+sudo chown -R "$SECOND_USER:staff" "$LAUNCH_DIR"
 echo ""
 
 # ─── Step 7: Enable Fast User Switching + initial login ───
@@ -150,9 +174,11 @@ sudo -u "$SECOND_USER" pkill -f "Google Chrome" 2>/dev/null || true
 sleep 1
 
 # Start fresh
-sudo launchctl bootstrap "gui/$SECOND_UID" "$LAUNCH_DIR/ai.secondself.vine.plist" 2>/dev/null || {
-    echo "  ⚠️  Vine Server LaunchAgent failed. May need to start manually."
-}
+if [ "$VINE_AVAILABLE" = true ]; then
+    sudo launchctl bootstrap "gui/$SECOND_UID" "$LAUNCH_DIR/ai.secondself.vine.plist" 2>/dev/null || {
+        echo "  ⚠️  Vine Server LaunchAgent failed. May need to start manually."
+    }
+fi
 sudo launchctl bootstrap "gui/$SECOND_UID" "$LAUNCH_DIR/ai.secondself.chrome.plist" 2>/dev/null || {
     echo "  ⚠️  Chrome LaunchAgent failed. May need to start manually."
 }
@@ -168,13 +194,17 @@ echo ""
 echo "[9/10] Verifying..."
 echo ""
 
-# Check Vine Server
+# Check Vine Server (optional)
 echo "  VNC (Vine Server on :5901):"
-if netstat -an | grep -q "\.5901.*LISTEN"; then
-    echo "    ✅ Listening"
+if [ "$VINE_AVAILABLE" = true ]; then
+    if netstat -an | grep -q "\.5901.*LISTEN"; then
+        echo "    ✅ Listening"
+    else
+        echo "    ⚠️  Not listening (Vine installed but not running)"
+        echo "    Check: cat $SECOND_HOME/second-self/vine.err"
+    fi
 else
-    echo "    ❌ Not listening"
-    echo "    Check: cat $SECOND_HOME/second-self/vine.err"
+    echo "    ⏭  Skipped (Vine Server not installed, MJPEG streaming works without it)"
 fi
 
 # Check Agent Server
@@ -199,14 +229,18 @@ else
     echo "    Try: sudo -H -u $SECOND_USER pip install 'browser-use[cli]'"
 fi
 
-# Check VNC connectivity
+# Check VNC connectivity (optional)
 echo ""
 echo "  VNC protocol test:"
-BANNER=$(echo | nc -w 2 localhost 5901 2>&1 | head -1)
-if echo "$BANNER" | grep -q "RFB"; then
-    echo "    ✅ VNC responding ($BANNER)"
+if [ "$VINE_AVAILABLE" = true ]; then
+    BANNER=$(echo | nc -w 2 localhost 5901 2>&1 | head -1)
+    if echo "$BANNER" | grep -q "RFB"; then
+        echo "    ✅ VNC responding ($BANNER)"
+    else
+        echo "    ⚠️  No VNC response"
+    fi
 else
-    echo "    ❌ No VNC response"
+    echo "    ⏭  Skipped (Vine Server not installed)"
 fi
 
 # Check WindowServer
@@ -222,9 +256,9 @@ echo ""
 echo "  To view secondself's desktop:"
 echo "    open -a TigerVNC --args localhost:5901"
 echo ""
-echo "  To start the orchestrator:"
+echo "  To start the orchestrator (or launch the SecondSelf app, which starts it automatically):"
 echo "    cd ~/second-self"
-echo "    source .env && export DEDALUS_API_KEY DEDALUS_API_URL DEDALUS_MODEL TAVILY_API_KEY"
+echo "    source .env && export ANTHROPIC_API_KEY TAVILY_API_KEY"
 echo "    python3 orchestrator/server.py"
 echo ""
 echo "  To test the agent:"

@@ -86,40 +86,24 @@ struct ExpandedNotchContent: View {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // VNC PiP: only visible when Twin is working (using computer)
-            if chatViewModel.twinState == .working {
-                VStack(spacing: 0) {
-                    HStack {
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.ssError).frame(width: 4, height: 4)
-                            Circle().fill(Color.ssTwinGreen).frame(width: 4, height: 4)
-                        }
-
-                        Spacer()
-
-                        Text("Twin's Desktop")
-                            .font(.system(size: 8, weight: .medium))
-                            .foregroundColor(Color.white.opacity(0.5))
-                            .tracking(0.64)
-
-                        Spacer()
-
-                        HStack(spacing: 5) {
-                            Circle().fill(Color.ssTwinGreen).frame(width: 5, height: 5)
-                            Text("LIVE")
-                                .font(.system(size: 8, weight: .medium))
-                                .foregroundColor(Color.ssTwinGreen)
-                                .tracking(0.64)
-                        }
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.top, 2)
-
+            // VNC PiP: appears when agent starts working, stays until user dismisses
+            if chatViewModel.showVNCFeed {
+                ZStack(alignment: .topTrailing) {
                     VNCPipView(twinState: chatViewModel.twinState)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 180)
+                        .frame(height: 220)
+
+                    // Dismiss button overlaid on stream
+                    Button(action: { chatViewModel.dismissVNCFeed() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(5)
+                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(6)
                 }
-                .background(Color.ssInputBg)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)

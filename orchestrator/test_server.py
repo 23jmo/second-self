@@ -360,12 +360,12 @@ class TestMessageQueue:
 
 class TestErrorHandling:
     @pytest.mark.asyncio
-    async def test_dedalus_429_in_stream(self, client):
-        """A 429 from Dedalus should yield an error event in the SSE stream."""
+    async def test_anthropic_429_in_stream(self, client):
+        """A 429 from Claude API should yield an error event in the SSE stream."""
 
         async def mock_streaming(task, max_steps=15):
             yield ("state", {"state": "thinking"})
-            yield ("error", {"message": "Dedalus API rate limited (429). Try again later."})
+            yield ("error", {"message": "Claude API rate limited. Try again later."})
             yield ("state", {"state": "error"})
 
         with patch("server.run_agent_loop_streaming", side_effect=mock_streaming):

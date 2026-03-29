@@ -15,8 +15,6 @@ struct VNCPipView: View {
     @State private var glowPhase: Bool = false
     @State private var livePhase: Bool = false
 
-    private let thumbnailSize = CGSize(width: 140, height: 90)
-
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Live desktop feed
@@ -24,13 +22,13 @@ struct VNCPipView: View {
                 if let image = streamer.currentFrame {
                     Image(nsImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: .fit)
                 } else {
                     Rectangle()
                         .fill(Color.ssBackground)
                 }
             }
-            .frame(width: thumbnailSize.width, height: thumbnailSize.height)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -46,25 +44,6 @@ struct VNCPipView: View {
                 radius: twinState == .working ? 8 : 4
             )
 
-            // LIVE indicator (only when actually streaming)
-            if streamer.currentFrame != nil {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.ssError)
-                        .frame(width: 5, height: 5)
-                        .opacity(livePhase ? 1.0 : 0.4)
-                    Text("LIVE")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(Color.ssTextPrimary)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule()
-                        .fill(Color.black.opacity(0.6))
-                )
-                .padding(6)
-            }
         }
         .scaleEffect(isHovered ? 1.02 : 1.0)
         .animation(.ssMicro, value: isHovered)

@@ -24,6 +24,10 @@ import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
 
+# Ensure sibling modules (productivity_tools) are importable regardless of
+# how this file is invoked (direct script vs uvicorn module import).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
