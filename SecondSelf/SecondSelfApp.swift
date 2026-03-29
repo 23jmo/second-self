@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pythonPath: String?
     private var envVars: [String: String] = [:]
 
+    private var authManager: GoogleAuthManager?
+
     /// Shared accessor for .env variables. Available after applicationDidFinishLaunching.
     /// Used by ElevenLabsService to read ELEVENLABS_API_KEY without duplicating .env parsing.
     static private(set) var sharedEnvVars: [String: String] = [:]
@@ -41,13 +43,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Discover repo root, python, and env vars once
         discoverEnvironment()
 
-        // Launch orchestrator (runs in primary session, talks to LLM APIs)
-        // Agent server is NOT launched here — it runs in secondself's session
-        // via LaunchAgent (ai.secondself.agent) for correct screen capture.
-        launchPython(script: "orchestrator/server.py", label: "Orchestrator")
+        // Start the FastAPI auth server (needed for Google sign-in page)
+        launchModule(module: "uvicorn", args: ["src.server:app", "--host", "127.0.0.1", "--port", "8000"], label: "Auth Server")
 
-        // Create the notch overlay
-        overlayController = NotchOverlayController()
+        // Create auth manager
+        let auth = GoogleAuthManager()
+        authManager = auth
+
+        // When auth succeeds, start the orchestrator
+        auth.onAuthenticated = { [weak self] in
+            Task { @MainActor in
+                self?.launchPython(script: "orchestrator/server.py", label: "Orchestrator")
+                print("[SecondSelf] Orchestrator started after sign-in")
+            }
+        }
+
+        // If already signed in, start orchestrator immediately
+        if auth.isAuthenticated {
+            print("[SecondSelf] Session found for: \(auth.userName ?? "unknown")")
+            launchPython(script: "orchestrator/server.py", label: "Orchestrator")
+        } else {
+            print("[SecondSelf] No session found, sign-in required via notch")
+        }
+
+        // Always create the notch — it shows sign-in or chat based on auth state
+        Task { @MainActor in
+            overlayController = NotchOverlayController(authManager: auth)
+        }
 
         // Register global hotkey: Cmd+Shift+T
         globalHotkeyMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -124,6 +146,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
         process.arguments = [scriptPath.path]
+        process.currentDirectoryURL = root
+        process.environment = envVars
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+
+        do {
+            try process.run()
+            subprocesses.append(process)
+            print("[SecondSelf] \(label) started (PID \(process.processIdentifier))")
+        } catch {
+            print("[SecondSelf] Failed to start \(label): \(error)")
+        }
+    }
+
+    private func launchModule(module: String, args: [String], label: String) {
+        guard let root = repoRoot, let python = pythonPath else { return }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: python)
+        process.arguments = ["-m", module] + args
         process.currentDirectoryURL = root
         process.environment = envVars
         process.standardOutput = FileHandle.standardOutput

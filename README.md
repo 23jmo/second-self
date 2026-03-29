@@ -79,37 +79,87 @@ second-self/
 └── tests/                         # 430+ unit tests
 ```
 
-## Setup
+## Live System
 
-### Prerequisites
+The identity pipeline feeds a live digital twin that controls a macOS desktop.
 
-- Python 3.11+
-- A Google Cloud project with Gmail API and Calendar API enabled
-- A Google Cloud project with OAuth 2.0 client credentials
-- Tavily API key
-- Anthropic API key
+```
+PRIMARY SESSION (you)                    SECONDSELF SESSION (background)
 
-### Installation
+ SecondSelf.app (SwiftUI notch app)      agent-server :8421
+   ├─ orchestrator :8420                   ├─ MJPEG desktop stream
+   │   ├─ Claude API (Sonnet 4)            ├─ Desktop tools (click, type, etc.)
+   │   └─ Tool routing                     └─ Quartz screen capture
+   ├─ VNC PiP (live desktop feed)
+   └─ Chat (SSE streaming)              Chrome :9222 (CDP for browser-use)
+                                         Vine Server :5901 (optional VNC)
+```
+
+### Quick Start (already provisioned)
 
 ```bash
-pip install -r requirements.txt
+# 1. Launch the app (starts orchestrator automatically)
+cd SecondSelf && swift build && swift run
+
+# 2. Cmd+Shift+T to toggle the chat panel
+# 3. Talk to your twin
 ```
+
+### First-Time Setup
+
+```bash
+# 1. Provision the secondself user account and services
+./setup/provision.sh
+
+# 2. Switch to secondself user session (click user icon in menu bar)
+#    Grant Screen Recording to python3:
+python3 -c "import Quartz; ref = Quartz.CGWindowListCreateImage(Quartz.CGRectInfinite, Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID, Quartz.kCGWindowImageDefault); print(ref)"
+#    Click Allow when macOS prompts, then switch back to your account
+
+# 3. Restart agent-server to pick up the permission
+./setup/restart-agent.sh
+
+# 4. Verify everything works
+./setup/smoke-test.sh
+```
+
+### Common Commands
+
+| Command | What it does |
+|---------|-------------|
+| `cd SecondSelf && swift build && swift run` | Launch the app |
+| `./setup/smoke-test.sh` | Test all services |
+| `./setup/restart-agent.sh` | Restart agent-server (copies latest code) |
+| `./setup/update-agent-server.sh` | Update agent-server code + restart |
+| `open -a TigerVNC --args localhost:5901` | View secondself's desktop |
+| `curl -s http://localhost:8421/health \| python3 -m json.tool` | Agent server health |
+| `sudo kill $(sudo lsof -ti :8420) 2>/dev/null` | Kill stale orchestrator |
 
 ### Environment Variables
 
 Create a `.env` file:
 
 ```
+ANTHROPIC_API_KEY=
+TAVILY_API_KEY=
+CLAUDE_MODEL=claude-sonnet-4-20250514
+FIREBASE_API_KEY=
+FIREBASE_AUTH_DOMAIN=
+FIREBASE_PROJECT_ID=
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
-GOOGLE_REDIRECT_URI=http://localhost:8080
-TAVILY_API_KEY=
-ANTHROPIC_API_KEY=
-USER_NAME=                # optional — auto-detected from Google sign-in
-USER_EMAIL=               # optional — auto-detected from Google sign-in
 ```
 
-## Usage
+### Ports
+
+| Port | Service | Session |
+|------|---------|---------|
+| 8420 | Orchestrator (Claude API bridge) | Primary (launched by app) |
+| 8421 | Agent Server (desktop tools + MJPEG stream) | secondself (LaunchAgent) |
+| 5901 | Vine Server VNC (optional) | secondself (LaunchAgent) |
+| 9222 | Chrome DevTools Protocol | secondself (LaunchAgent) |
+
+## Identity Pipeline
 
 ### Full pipeline
 
@@ -123,27 +173,11 @@ Runs all layers: Gmail fetch, Tavily search, email cleaning, all analyzers in pa
 
 | Flag | Description |
 |------|-------------|
-| `--dry-run` | Run pipeline without writing to `~/.secondself/`. Prints all outputs to stdout. |
-| `--no-cache` | Bypass all caches and re-fetch from APIs. |
-| `--tavily-only` | Skip Gmail entirely, build identity from Tavily web search only. |
-| `--memory-only` | Skip Gmail fetch and Layer 1 analyzers. Only refresh Layer 2 + 4 (events, calendar, preferences). |
-| `--verbose` | Enable DEBUG logging. |
-
-### Examples
-
-```bash
-# First run — full pipeline
-python main.py
-
-# Quick refresh of preferences and events without re-fetching emails
-python main.py --memory-only
-
-# Preview what the pipeline would produce
-python main.py --dry-run
-
-# Rebuild from scratch, ignoring all caches
-python main.py --no-cache
-```
+| `--dry-run` | Run pipeline without writing to `~/.secondself/` |
+| `--no-cache` | Bypass all caches and re-fetch from APIs |
+| `--tavily-only` | Skip Gmail, build identity from Tavily web search only |
+| `--memory-only` | Skip Gmail fetch and Layer 1 analyzers, only refresh Layer 2 + 4 |
+| `--verbose` | Enable DEBUG logging |
 
 ## Output
 
@@ -161,8 +195,6 @@ After a successful run:
 ```bash
 python -m pytest tests/ -v
 ```
-
-430+ unit tests covering all modules with mocked LLM and API calls.
 
 ## License
 

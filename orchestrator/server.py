@@ -1,14 +1,14 @@
 """
 Orchestrator — runs in the primary user session on port 8420.
-Bridges between the UI (menubar app), Gemini, and the Agent Server.
+Bridges between the UI (menubar app), Claude (Anthropic SDK), and the Agent Server.
 
 Flow:
   1. UI sends a chat message (POST /chat)
-  2. Orchestrator calls Gemini via google-genai SDK with streaming
-  3. Gemini returns text tokens + function calls (browser, desktop, UI, productivity)
-  4. Orchestrator executes function calls against Agent Server (port 8421)
+  2. Orchestrator calls Claude via Anthropic SDK with streaming
+  3. Claude returns text tokens + tool calls (browser, desktop, UI, productivity)
+  4. Orchestrator executes tool calls against Agent Server (port 8421)
      or runs productivity tools (Gmail, Calendar, etc.) directly
-  5. Returns results to Gemini for next step (agentic loop)
+  5. Returns results to Claude for next step (agentic loop)
   6. SSE events stream back to the SwiftUI notch app in real time
 
 Layer 0: FastAPI with job state machine and SSE streaming.
@@ -17,19 +17,23 @@ Layer 0: FastAPI with job state machine and SSE streaming.
 import asyncio
 import json
 import os
+import pathlib
 import sys
 import time
 import uuid
 import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Ensure sibling modules (productivity_tools) are importable regardless of
 # how this file is invoked (direct script vs uvicorn module import).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from google import genai
-from google.genai import types
+# Also ensure the project root is importable (for utils.episodic_writer)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,13 +45,14 @@ from productivity_tools import (
     PRODUCTIVITY_TOOL_NAMES,
     execute_productivity_tool,
 )
+from suggestion_engine import profile_trigger, pattern_trigger, ambient_tick
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 PORT = 8420
 AGENT_SERVER_URL = "http://localhost:8421"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
 # Google OAuth token for productivity tools (loaded from src/auth on startup)
@@ -125,29 +130,7 @@ UI_TOOLS = [
      }, "required": ["action"]}},
 ]
 
-ALL_TOOLS_ANTHROPIC = BROWSER_TOOLS + DESKTOP_TOOLS + UI_TOOLS + PRODUCTIVITY_TOOLS
-
-
-def _anthropic_to_gemini_decl(tool: dict) -> dict:
-    """Convert an Anthropic-format tool definition to a Gemini function declaration."""
-    schema = tool.get("input_schema", {})
-    params = {}
-    if schema.get("properties"):
-        params = {
-            "type": "object",
-            "properties": schema["properties"],
-        }
-        if schema.get("required"):
-            params["required"] = schema["required"]
-    return {
-        "name": tool["name"],
-        "description": tool["description"],
-        "parameters": params if params else None,
-    }
-
-
-# Convert all tools to Gemini function declarations
-GEMINI_FUNCTION_DECLARATIONS = [_anthropic_to_gemini_decl(t) for t in ALL_TOOLS_ANTHROPIC]
+ALL_TOOLS = BROWSER_TOOLS + DESKTOP_TOOLS + UI_TOOLS + PRODUCTIVITY_TOOLS
 
 # Map tool names to Agent Server endpoints
 TOOL_ENDPOINT_MAP = {
@@ -183,7 +166,37 @@ current_job: dict = {
     "message_queue": [],
 }
 
-# Conversation history and cached profile kept across jobs
+# ---------------------------------------------------------------------------
+# Conversation history (persisted to Firestore when available)
+# ---------------------------------------------------------------------------
+
+_user_uid: str | None = None
+_user_name: str | None = None
+_chat_session_id: str = uuid.uuid4().hex
+_conversation_history: list = []
+MAX_HISTORY_MESSAGES = 40
+
+cached_profile: dict | None = None
+rewards_path = pathlib.Path.home() / ".secondself" / "rewards.jsonl"
+
+# ---------------------------------------------------------------------------
+# Persistent SSE broadcast — GET /events channel
+# ---------------------------------------------------------------------------
+
+event_clients: list[asyncio.Queue] = []
+
+
+async def broadcast_event(event_type: str, data: dict) -> None:
+    """Push an event to all connected /events SSE clients."""
+    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    disconnected = []
+    for q in event_clients:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            disconnected.append(q)
+    for q in disconnected:
+        event_clients.remove(q)
 
 
 async def set_job_state(state: str, task: str | None = None, message: str | None = None) -> None:
@@ -228,76 +241,71 @@ def call_agent_server(endpoint: str, body: dict | None = None, method: str = "PO
 
 
 # ---------------------------------------------------------------------------
-# Gemini SDK — client + non-streaming helper
+# Anthropic SDK — streaming helper
 # ---------------------------------------------------------------------------
 
-_gemini_client: genai.Client | None = None
+_anthropic_client: anthropic.AsyncAnthropic | None = None
 
 
-def _get_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    return _gemini_client
+def _get_client() -> anthropic.AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
 
 
-async def call_gemini(
-    contents: list,
-    system: str,
-    tools: list[dict] | None = None,
-) -> tuple[list, str]:
+async def call_claude_streaming(messages: list, system: str, tools: list | None = None):
     """
-    Call Gemini and return (response_parts, finish_reason).
-
-    response_parts is a list of dicts, each either:
-      - {"type": "text", "text": "..."}
-      - {"type": "function_call", "id": "...", "name": "...", "args": {...}}
+    Call Claude via Anthropic SDK with streaming.
+    Yields (event_type, data) tuples compatible with the existing SSE layer:
+      - ("token", {"text": "..."})  — individual text chunks
+      - ("_tool_use", {"id": "...", "name": "...", "input": {...}})  — completed tool call
+      - ("_done", {"stop_reason": "..."})  — end of turn
+      - ("error", {"message": "..."})  — error
     """
-    if not GEMINI_API_KEY:
-        return [], "error"
+    if not ANTHROPIC_API_KEY:
+        yield ("error", {"message": "ANTHROPIC_API_KEY not set"})
+        return
 
     client = _get_client()
-
-    config: dict = {
-        "temperature": 0.7,
-        "max_output_tokens": 4096,
-        "system_instruction": system,
+    kwargs: dict = {
+        "model": CLAUDE_MODEL,
+        "max_tokens": 4096,
+        "system": system,
+        "messages": messages,
     }
     if tools:
-        config["tools"] = [types.Tool(function_declarations=tools)]
-        config["tool_config"] = types.ToolConfig(
-            function_calling_config=types.FunctionCallingConfig(mode="AUTO")
-        )
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = {"type": "auto"}
 
     try:
-        response = await client.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=config,
-        )
+        async with client.messages.stream(**kwargs) as stream:
+            async for event in stream:
+                if event.type == "content_block_delta":
+                    if hasattr(event.delta, "text"):
+                        yield ("token", {"text": event.delta.text})
+                    elif hasattr(event.delta, "partial_json"):
+                        pass  # tool input accumulating, handled at block stop
 
-        parts = []
-        for part in response.candidates[0].content.parts:
-            if part.text:
-                parts.append({"type": "text", "text": part.text})
-            elif part.function_call:
-                fc = part.function_call
-                parts.append({
-                    "type": "function_call",
-                    "id": getattr(fc, "id", None) or uuid.uuid4().hex[:8],
-                    "name": fc.name,
-                    "args": dict(fc.args) if fc.args else {},
-                })
+                elif event.type == "content_block_stop":
+                    block = stream.current_message_snapshot.content[event.index]
+                    if block.type == "tool_use":
+                        yield ("_tool_use", {
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        })
 
-        finish = response.candidates[0].finish_reason
-        # Gemini finish reasons: STOP, MAX_TOKENS, SAFETY, RECITATION, OTHER
-        stop_reason = "end_turn" if str(finish) == "FinishReason.STOP" else "tool_use"
+            # After stream completes, yield the stop reason
+            final = await stream.get_final_message()
+            yield ("_done", {"stop_reason": final.stop_reason})
 
-        return parts, stop_reason
-
+    except anthropic.RateLimitError:
+        yield ("error", {"message": "Claude API rate limited. Try again later."})
+    except anthropic.APITimeoutError:
+        yield ("error", {"message": "Claude API request timed out."})
     except Exception as e:
-        print(f"[orchestrator] Gemini error: {e}")
-        return [{"type": "text", "text": f"Error: {e}"}], "error"
+        yield ("error", {"message": f"Claude streaming error: {e}"})
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +339,7 @@ def call_tavily(query: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Cookie sync execution
+# Tool execution
 # ---------------------------------------------------------------------------
 
 def _get_chrome_profile_info() -> tuple[str, str]:
@@ -348,23 +356,17 @@ def _get_chrome_profile_info() -> tuple[str, str]:
 
 
 async def _execute_cookie_sync(profile: str | None = None) -> dict:
-    """Run the full cookie export + CDP import pipeline.
-
-    Runs as the primary user (johnathanmo) so has Keychain access for export
-    and localhost CDP access for import.
-    """
+    """Run the full cookie export + CDP import pipeline."""
     global _cookies_synced
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
         from cookie_sync.export import export_cookies
         from cookie_sync.import_cookies import import_cookies_sync
 
-        # Step 1: Export cookies from user's Chrome
         state = await asyncio.to_thread(export_cookies, profile)
         cookie_count = len(state.get("cookies", []))
         print(f"[orchestrator] Cookie sync: exported {cookie_count} cookies")
 
-        # Step 2: Import into secondself's Chrome via CDP
         result = await asyncio.to_thread(import_cookies_sync)
         imported = result.get("imported", 0)
         print(f"[orchestrator] Cookie sync: imported {imported} cookies")
@@ -381,10 +383,6 @@ async def _execute_cookie_sync(profile: str | None = None) -> dict:
         return {"status": "error", "error": str(e)}
 
 
-# ---------------------------------------------------------------------------
-# Tool execution
-# ---------------------------------------------------------------------------
-
 async def execute_tool_call(tool_name: str, arguments: dict) -> str:
     """Execute a tool call — routes to agent-server, productivity tools, or UI layer."""
     global _cookies_sync_offered
@@ -393,7 +391,7 @@ async def execute_tool_call(tool_name: str, arguments: dict) -> str:
     if tool_name.startswith("render_"):
         return json.dumps({"status": "rendered", "awaiting_user_action": True})
 
-    # Cookie sync tool — run the full export+import pipeline
+    # Cookie sync tool
     if tool_name == "sync_cookies":
         profile = arguments.get("profile")
         result = await _execute_cookie_sync(profile)
@@ -433,15 +431,17 @@ async def execute_tool_call(tool_name: str, arguments: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# System prompt builder
+# System prompt builder — reads identity/preferences/episodic from disk
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    "You are a digital twin controlling a macOS desktop with four types of tools:\n"
+_SECONDSELF_DIR = Path.home() / ".secondself"
+
+_TOOLS_AND_RULES = (
+    "You have four types of tools:\n"
     "\n"
     "BROWSER TOOLS (for any web task):\n"
     "  browser_goto(url), browser_snapshot(), browser_click(ref), browser_fill(ref, text),\n"
-    "  browser_press(key), browser_text(), sync_cookies(profile?)\n"
+    "  browser_press(key), browser_text()\n"
     "\n"
     "DESKTOP TOOLS (native macOS apps only):\n"
     "  open_app(name), type_text(text), hotkey(keys), click(x, y), screenshot(), scroll(dy)\n"
@@ -465,9 +465,6 @@ SYSTEM_PROMPT = (
     "- For web tasks, use browser_* tools. For native macOS apps, use desktop tools.\n"
     "- NEVER mix browser and desktop tools in the same step.\n"
     "- ALWAYS call browser_snapshot() after navigation.\n"
-    "- COOKIE SYNC: If browser_goto returns status 'no_cookies', use render_confirm_action\n"
-    "  to ask the user if they want to sync their Chrome cookies. If they approve,\n"
-    "  call sync_cookies(), then retry the original browser_goto.\n"
     "- For email: use draft_email FIRST, then send_email after user confirms.\n"
     "- When the user mentions someone by name, use get_contact_info to find their email.\n"
     "- For inbox summaries, use summarize_emails.\n"
@@ -481,89 +478,178 @@ SYSTEM_PROMPT = (
     "Complete the user's task step by step."
 )
 
+# Cache: (mtime_identity, mtime_preferences, mtime_episodic) → prompt string
+_prompt_cache: dict[str, object] = {"key": None, "prompt": None}
+
+
+def _read_if_exists(path: Path) -> str | None:
+    """Read a file's text if it exists, else None."""
+    try:
+        return path.read_text(encoding="utf-8") if path.exists() else None
+    except OSError:
+        return None
+
+
+def _get_mtime(path: Path) -> float:
+    """Return mtime or 0 if the file doesn't exist."""
+    try:
+        return path.stat().st_mtime if path.exists() else 0.0
+    except OSError:
+        return 0.0
+
+
+def build_system_prompt() -> str:
+    """Build the system prompt, injecting memory files if they exist.
+
+    Caches the result until any of the source files change on disk.
+    Falls back to a generic tool-only prompt if no memory files exist.
+    """
+    identity_path = _SECONDSELF_DIR / "identity.md"
+    preferences_path = _SECONDSELF_DIR / "preferences.md"
+    episodic_path = _SECONDSELF_DIR / "episodic.md"
+
+    cache_key = (
+        _get_mtime(identity_path),
+        _get_mtime(preferences_path),
+        _get_mtime(episodic_path),
+    )
+    if _prompt_cache["key"] == cache_key and _prompt_cache["prompt"] is not None:
+        return _prompt_cache["prompt"]
+
+    identity_text = _read_if_exists(identity_path)
+    preferences_text = _read_if_exists(preferences_path)
+
+    # Load recent episodic events
+    episodic_section = ""
+    try:
+        from utils.episodic_writer import get_weighted_events
+        events = get_weighted_events(recent_n=20, total_n=30)
+        if events:
+            lines = []
+            for e in events:
+                lines.append(f"- {e['date']} | {e['category']} | {e['summary']}")
+            episodic_section = "\n".join(lines)
+    except Exception:
+        episodic_section = ""
+
+    # If no memory files exist yet, fall back to generic prompt
+    if not identity_text and not preferences_text and not episodic_section:
+        prompt = (
+            "You are a digital twin controlling a macOS desktop.\n\n"
+            + _TOOLS_AND_RULES
+        )
+        _prompt_cache["key"] = cache_key
+        _prompt_cache["prompt"] = prompt
+        print("[orchestrator] System prompt: generic (no memory files found)")
+        return prompt
+
+    # Extract the user's name from identity.md header
+    user_name = "the user"
+    if identity_text:
+        for line in identity_text.splitlines():
+            if line.startswith("# ") and "Identity Profile" in line:
+                user_name = line.replace("# ", "").replace("'s Identity Profile", "").strip()
+                break
+
+    first_name = user_name.split()[0] if user_name != "the user" else "there"
+
+    # Build the personality-aware prompt
+    sections = []
+
+    sections.append(
+        f"You are {first_name}'s digital twin.\n\n"
+        f"You are not an assistant. You are not a chatbot. You ARE {first_name}, "
+        f"running in parallel. You think how they think, you write how they write, "
+        f"you care about what they care about. When {first_name} asks you to send an "
+        f"email, the recipient should not be able to tell the difference between you "
+        f"and the real {first_name}.\n\n"
+        f"How you talk:\n"
+        f"Never use markdown. No bullet points, no bold text, no headers, no code blocks. "
+        f"Just plain conversational text, the way a real person types in a chat window. "
+        f"Write in short, natural sentences. Sound like {first_name} texting a coworker.\n\n"
+        f"How you act:\n"
+        f"You do things, you don't describe things. When {first_name} asks you to do "
+        f"something, use tools and get it done. No narration about what you \"would\" do. "
+        f"After you do something, confirm it in one short sentence. Done. Move on."
+    )
+
+    if identity_text:
+        sections.append(f"IDENTITY PROFILE:\n{identity_text}")
+
+    if preferences_text:
+        sections.append(f"PREFERENCES & SCHEDULE:\n{preferences_text}")
+
+    if episodic_section:
+        sections.append(f"RECENT HISTORY (things you've done or that happened):\n{episodic_section}")
+
+    sections.append(_TOOLS_AND_RULES)
+
+    prompt = "\n\n---\n\n".join(sections)
+    _prompt_cache["key"] = cache_key
+    _prompt_cache["prompt"] = prompt
+    print(f"[orchestrator] System prompt: personalized for {user_name} "
+          f"(identity={'yes' if identity_text else 'no'}, "
+          f"preferences={'yes' if preferences_text else 'no'}, "
+          f"episodic={len(episodic_section.splitlines()) if episodic_section else 0} events)")
+    return prompt
+
 
 # ---------------------------------------------------------------------------
 # Agent loop — non-streaming (backward compat for /command)
 # ---------------------------------------------------------------------------
 
-def _build_gemini_contents(messages: list) -> list:
-    """Convert our internal message format to Gemini contents format."""
-    contents = []
-    for msg in messages:
-        role = msg["role"]
-        gemini_role = "user" if role == "user" else "model"
-
-        if isinstance(msg["content"], str):
-            contents.append(types.Content(
-                role=gemini_role,
-                parts=[types.Part(text=msg["content"])],
-            ))
-        elif isinstance(msg["content"], list):
-            parts = []
-            for block in msg["content"]:
-                if block.get("type") == "text":
-                    parts.append(types.Part(text=block["text"]))
-                elif block.get("type") == "function_call":
-                    parts.append(types.Part(function_call=types.FunctionCall(
-                        name=block["name"],
-                        args=block.get("args", {}),
-                        id=block.get("id"),
-                    )))
-                elif block.get("type") == "function_response":
-                    parts.append(types.Part.from_function_response(
-                        name=block["name"],
-                        response=json.loads(block["content"]) if isinstance(block["content"], str) else block["content"],
-                        id=block.get("id"),
-                    ))
-            if parts:
-                contents.append(types.Content(role=gemini_role, parts=parts))
-    return contents
-
-
 async def run_agent_loop(task: str, max_steps: int = 15) -> list:
     """
-    Run the agentic loop: send task to Gemini, execute function calls, repeat.
+    Run the agentic loop: send task to Claude, execute tool calls, repeat.
     Returns a list of actions taken.
     """
     actions: list = []
-    messages: list = [{"role": "user", "content": task}]
+    _append_to_history("user", task)
+    messages: list = list(_conversation_history)
 
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
 
-        contents = _build_gemini_contents(messages)
-        response_parts, stop_reason = await call_gemini(
-            contents, SYSTEM_PROMPT, tools=GEMINI_FUNCTION_DECLARATIONS,
-        )
-
-        if stop_reason == "error":
-            actions.append({"step": step + 1, "error": "Gemini API error"})
-            break
-
-        # Build assistant message for history
+        # Collect the full response
         text_content = ""
         tool_calls = []
+        stop_reason = None
+        had_error = False
+
+        async for event_type, event_data in call_claude_streaming(messages, build_system_prompt(), tools=ALL_TOOLS):
+            if event_type == "token":
+                text_content += event_data["text"]
+            elif event_type == "_tool_use":
+                tool_calls.append(event_data)
+            elif event_type == "_done":
+                stop_reason = event_data["stop_reason"]
+            elif event_type == "error":
+                actions.append({"step": step + 1, "error": event_data["message"]})
+                had_error = True
+                break
+
+        if had_error:
+            break
+
+        # Build the assistant message for conversation history
         content_blocks = []
-
-        for part in response_parts:
-            if part["type"] == "text":
-                text_content += part["text"]
-                content_blocks.append(part)
-            elif part["type"] == "function_call":
-                tool_calls.append(part)
-                content_blocks.append(part)
-
+        if text_content:
+            content_blocks.append({"type": "text", "text": text_content})
+        for tc in tool_calls:
+            content_blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
         messages.append({"role": "assistant", "content": content_blocks})
+        _append_to_history("assistant", content_blocks)
 
         if stop_reason == "end_turn" or not tool_calls:
             actions.append({"step": step + 1, "type": "complete", "message": text_content or "Task complete."})
+            _log_episodic_event(task)
             break
 
-        # Execute function calls and add results
-        fn_response_blocks = []
+        # Execute tool calls and add results
+        tool_results = []
         for tc in tool_calls:
             fn_name = tc["name"]
-            fn_args = tc["args"]
+            fn_args = tc["input"]
             print(f"[orchestrator]   Tool: {fn_name}({fn_args})")
             result_str = await execute_tool_call(fn_name, fn_args)
             try:
@@ -571,14 +657,10 @@ async def run_agent_loop(task: str, max_steps: int = 15) -> list:
             except (json.JSONDecodeError, TypeError):
                 result_parsed = {"result": result_str}
             actions.append({"step": step + 1, "type": "tool_call", "tool": fn_name, "args": fn_args, "result": result_parsed})
-            fn_response_blocks.append({
-                "type": "function_response",
-                "name": fn_name,
-                "content": result_str,
-                "id": tc.get("id"),
-            })
+            tool_results.append({"type": "tool_result", "tool_use_id": tc["id"], "content": result_str})
 
-        messages.append({"role": "user", "content": fn_response_blocks})
+        messages.append({"role": "user", "content": tool_results})
+        _append_to_history("user", tool_results)
 
     return actions
 
@@ -662,70 +744,158 @@ def convert_to_a2ui(tool_name: str, args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Conversation history helpers
+# ---------------------------------------------------------------------------
+
+def _strip_screenshots(content) -> any:
+    """Strip base64 screenshot data from message content before saving to Firestore."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        cleaned = []
+        for block in content:
+            if isinstance(block, dict):
+                # Strip base64 image data from tool results
+                if block.get("type") == "tool_result":
+                    c = block.get("content", "")
+                    if isinstance(c, str) and len(c) > 10000:
+                        block = {**block, "content": "[large result stripped]"}
+                # Strip screenshot image data
+                if "image" in str(block) and len(str(block)) > 10000:
+                    block = {**block, "content": "[screenshot captured]"} if "content" in block else block
+            cleaned.append(block)
+        return cleaned
+    return content
+
+
+def _append_to_history(role: str, content) -> None:
+    """Append a message to in-memory history and persist to Firestore if available."""
+    global _conversation_history
+    _conversation_history.append({"role": role, "content": content})
+
+    # Trim to max history
+    if len(_conversation_history) > MAX_HISTORY_MESSAGES:
+        _conversation_history = _conversation_history[-MAX_HISTORY_MESSAGES:]
+
+    # Persist to Firestore
+    if _user_uid:
+        try:
+            from src.db.chat_repository import append_message
+            append_message(_user_uid, _chat_session_id, role, _strip_screenshots(content))
+        except Exception as e:
+            print(f"[orchestrator] Failed to save message to Firestore: {e}")
+
+
+def _load_history_from_firestore() -> None:
+    """Load conversation history from Firestore on startup."""
+    global _conversation_history
+    if not _user_uid:
+        return
+    try:
+        from src.db.chat_repository import get_messages
+        messages = get_messages(_user_uid, _chat_session_id)
+        if messages:
+            _conversation_history = messages[-MAX_HISTORY_MESSAGES:]
+            print(f"[orchestrator] Loaded {len(_conversation_history)} messages from Firestore")
+    except Exception as e:
+        print(f"[orchestrator] Could not load chat history: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Episodic memory logging
+# ---------------------------------------------------------------------------
+
+def _log_episodic_event(task: str) -> None:
+    """Log a completed task to episodic memory. Never raises."""
+    try:
+        from utils.episodic_writer import append_event
+        summary = task[:200] if len(task) > 200 else task
+        append_event(
+            summary=summary,
+            category="agent_action",
+            source="orchestrator",
+        )
+    except Exception as exc:
+        print(f"[orchestrator] Failed to log episodic event: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Agent loop — streaming (for POST /chat SSE)
 # ---------------------------------------------------------------------------
 
-async def run_agent_loop_streaming(task: str, max_steps: int = 15):
+async def run_agent_loop_streaming(task: str, max_steps: int = 15, source: str = "user"):
     """
-    Agentic loop using Gemini SDK. Yields (event_type, data)
+    Streaming agentic loop using Anthropic SDK. Yields (event_type, data)
     tuples for SSE — same format the SwiftUI app already handles.
+    source: "user" for direct chat, "suggestion" for accepted proactive suggestions.
     """
     yield ("state", {"state": "thinking"})
 
-    messages: list = [{"role": "user", "content": task}]
+    _append_to_history("user", task)
+    messages: list = list(_conversation_history)
 
     for step in range(max_steps):
         print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
+        had_error = False
+        stop_reason = None
+        text_content = ""
+        tool_calls = []
+        buffered_tokens = []
 
-        contents = _build_gemini_contents(messages)
-        response_parts, stop_reason = await call_gemini(
-            contents, SYSTEM_PROMPT, tools=GEMINI_FUNCTION_DECLARATIONS,
-        )
+        async for event_type, event_data in call_claude_streaming(messages, build_system_prompt(), tools=ALL_TOOLS):
+            if event_type == "token":
+                buffered_tokens.append(event_data)
+                text_content += event_data["text"]
+            elif event_type == "_tool_use":
+                tool_calls.append(event_data)
+            elif event_type == "_done":
+                stop_reason = event_data["stop_reason"]
+            elif event_type == "error":
+                yield ("error", event_data)
+                had_error = True
+                break
 
-        if stop_reason == "error":
-            yield ("error", {"message": "Gemini API error"})
+        if had_error:
             yield ("state", {"state": "error"})
             async with job_lock:
                 current_job["state"] = "error"
             return
 
-        text_content = ""
-        tool_calls = []
-        content_blocks = []
-
-        for part in response_parts:
-            if part["type"] == "text":
-                text_content += part["text"]
-                content_blocks.append(part)
-            elif part["type"] == "function_call":
-                tool_calls.append(part)
-                content_blocks.append(part)
-
         # Check if this turn has any render_* tool calls
         has_render_tool = any(tc["name"].startswith("render_") for tc in tool_calls)
 
-        # Emit text as a single token event if no render_* tool was called
-        if not has_render_tool and text_content:
-            yield ("token", {"text": text_content})
+        # Only emit buffered tokens if no render_* tool was called
+        if not has_render_tool:
+            for token_data in buffered_tokens:
+                yield ("token", token_data)
 
+        # Build assistant message for conversation history
+        content_blocks = []
+        if text_content:
+            content_blocks.append({"type": "text", "text": text_content})
+        for tc in tool_calls:
+            content_blocks.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc["input"]})
         messages.append({"role": "assistant", "content": content_blocks})
+        _append_to_history("assistant", content_blocks)
 
         # If no tool calls, we're done
         if stop_reason == "end_turn" or not tool_calls:
+            _conversation_history.append({"role": "assistant", "content": text_content or "Task complete."})
             yield ("state", {"state": "complete", "message": text_content or "Task complete."})
             async with job_lock:
                 current_job["state"] = "complete"
+            _log_episodic_event(task)
             return
 
-        # Execute each function call
+        # Execute each tool call
         yield ("state", {"state": "working"})
         async with job_lock:
             current_job["state"] = "working"
 
-        fn_response_blocks = []
+        tool_results = []
         for tc in tool_calls:
             fn_name = tc["name"]
-            fn_args = tc["args"]
+            fn_args = tc["input"]
             print(f"[orchestrator]   Tool: {fn_name}({fn_args})")
 
             if fn_name.startswith("render_"):
@@ -752,15 +922,15 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
                     "result": action_result,
                 })
 
-            fn_response_blocks.append({
-                "type": "function_response",
-                "name": fn_name,
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tc["id"],
                 "content": result_str,
-                "id": tc.get("id"),
             })
 
-        # Add function responses and loop back for next Gemini call
-        messages.append({"role": "user", "content": fn_response_blocks})
+        # Add tool results and loop back for next Claude call
+        messages.append({"role": "user", "content": tool_results})
+        _append_to_history("user", tool_results)
         yield ("state", {"state": "thinking"})
         async with job_lock:
             current_job["state"] = "thinking"
@@ -769,6 +939,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
     yield ("state", {"state": "complete", "message": "Reached maximum steps."})
     async with job_lock:
         current_job["state"] = "complete"
+    _log_episodic_event(task)
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +947,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
 # ---------------------------------------------------------------------------
 
 async def handle_profile(name: str) -> dict:
-    """Profile a person using Tavily web search + Gemini summarization."""
+    """Profile a person using Tavily web search + Claude summarization."""
     results = await asyncio.to_thread(call_tavily, f"{name} professional background work")
     if "error" in results:
         return results
@@ -788,16 +959,13 @@ async def handle_profile(name: str) -> dict:
 
     try:
         client = _get_client()
-        response = await client.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=f"Person: {name}\n\nSearch results:\n{search_content}",
-            config=types.GenerateContentConfig(
-                system_instruction="Summarize this person's professional profile as JSON: name, title, company, interests (array), recent_activity (string), bio (2-3 sentences).",
-                max_output_tokens=1024,
-                temperature=0,
-            ),
+        response = await client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            system="Summarize this person's professional profile as JSON: name, title, company, interests (array), recent_activity (string), bio (2-3 sentences).",
+            messages=[{"role": "user", "content": f"Person: {name}\n\nSearch results:\n{search_content}"}],
         )
-        content = response.text or ""
+        content = response.content[0].text
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
         elif "```" in content:
@@ -827,18 +995,69 @@ async def handle_anticipatory_setup(profile: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Suggestion triggers (async wrappers)
+# ---------------------------------------------------------------------------
+
+async def _check_pattern_suggestions() -> None:
+    """Run pattern detection in a thread and broadcast any suggestions."""
+    try:
+        # Snapshot to avoid race with /reset clearing the list mid-iteration
+        suggestions = await asyncio.to_thread(
+            pattern_trigger, list(_conversation_history), cached_profile
+        )
+        for suggestion in suggestions:
+            await broadcast_event("suggestion", suggestion)
+    except Exception as e:
+        print(f"[orchestrator] Pattern trigger error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Ambient awareness loop (Layer 3)
+# ---------------------------------------------------------------------------
+
+ambient_loop_task: asyncio.Task | None = None
+ambient_interval: float = 30.0
+
+
+async def _ambient_loop() -> None:
+    """Background task: runs ambient_tick every ambient_interval seconds."""
+    global ambient_interval
+    failure_backoff = 30.0
+    await asyncio.sleep(10)  # stabilize before first tick
+
+    while True:
+        try:
+            await asyncio.sleep(ambient_interval)
+            if current_job["state"] in ("thinking", "working"):
+                continue
+            if cached_profile is None:
+                continue
+            # Snapshot to avoid race with /reset clearing the list mid-iteration
+            suggestions = await asyncio.to_thread(
+                ambient_tick, list(_conversation_history), cached_profile
+            )
+            for suggestion in suggestions:
+                await broadcast_event("suggestion", suggestion)
+            failure_backoff = 30.0
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[orchestrator] Ambient loop error: {e}")
+            failure_backoff = min(failure_backoff * 2, 120.0)
+            await asyncio.sleep(failure_backoff)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Startup / shutdown lifecycle."""
-    global _google_access_token, _cookies_synced, _cookies_sync_offered
-    _cookies_synced = False
-    _cookies_sync_offered = False
+    global _google_access_token, _user_uid, _user_name, _chat_session_id, ambient_loop_task
 
-    if not GEMINI_API_KEY:
-        print("[orchestrator] WARNING: GEMINI_API_KEY not set. Set it: export GEMINI_API_KEY=your_key")
+    if not ANTHROPIC_API_KEY:
+        print("[orchestrator] WARNING: ANTHROPIC_API_KEY not set. Set it: export ANTHROPIC_API_KEY=your_key")
     if not TAVILY_API_KEY:
         print("[orchestrator] WARNING: TAVILY_API_KEY not set. Set it: export TAVILY_API_KEY=your_key")
 
@@ -850,7 +1069,11 @@ async def lifespan(application: FastAPI):
         if result:
             _, token_data = result
             _google_access_token = token_data.google_access_token
+            _user_uid = token_data.email
+            _user_name = token_data.name
+            _chat_session_id = uuid.uuid4().hex
             print(f"[orchestrator] Google OAuth loaded for: {token_data.name}")
+            print(f"[orchestrator] Chat session: {_chat_session_id[:8]}... (user: {_user_uid})")
         else:
             print("[orchestrator] No Google auth session found. Productivity tools will need auth first.")
     except Exception as e:
@@ -865,9 +1088,16 @@ async def lifespan(application: FastAPI):
 
     print(f"[orchestrator] Starting on port {PORT}")
     print(f"[orchestrator] Agent Server expected at {AGENT_SERVER_URL}")
-    print(f"[orchestrator] Model: {GEMINI_MODEL}")
-    print(f"[orchestrator] Tools: {len(ALL_TOOLS_ANTHROPIC)} ({len(BROWSER_TOOLS)} browser, {len(DESKTOP_TOOLS)} desktop, {len(UI_TOOLS)} UI, {len(PRODUCTIVITY_TOOLS)} productivity)")
+    print(f"[orchestrator] Model: {CLAUDE_MODEL}")
+    print(f"[orchestrator] Tools: {len(ALL_TOOLS)} ({len(BROWSER_TOOLS)} browser, {len(DESKTOP_TOOLS)} desktop, {len(UI_TOOLS)} UI, {len(PRODUCTIVITY_TOOLS)} productivity)")
+
+    ambient_loop_task = asyncio.create_task(_ambient_loop())
+    print("[orchestrator] Ambient suggestion loop started (30s interval)")
+
     yield
+
+    if ambient_loop_task:
+        ambient_loop_task.cancel()
     print("[orchestrator] Shutting down")
 
 
@@ -903,7 +1133,7 @@ async def health():
     return {
         "status": "ok",
         "agent_server": agent_status,
-        "gemini_configured": bool(GEMINI_API_KEY),
+        "anthropic_configured": bool(ANTHROPIC_API_KEY),
         "tavily_configured": bool(TAVILY_API_KEY),
     }
 
@@ -943,7 +1173,25 @@ async def profile(request: Request):
         return JSONResponse(status_code=400, content={"error": "missing 'name' field"})
     print(f"[orchestrator] Profiling: {name}")
     result = await handle_profile(name)
+    global cached_profile
+    cached_profile = result
+
+    # Fire profile-based suggestions (Layer 1) as background task
+    # so /profile response isn't blocked by the suggestion LLM call
+    asyncio.create_task(_fire_profile_suggestions(result))
+
     return result
+
+
+async def _fire_profile_suggestions(profile_data: dict) -> None:
+    """Background: generate and broadcast the best profile suggestion."""
+    try:
+        suggestions = await asyncio.to_thread(profile_trigger, profile_data)
+        if suggestions:
+            best = max(suggestions, key=lambda s: s.get("confidence", 0))
+            await broadcast_event("suggestion", best)
+    except Exception as e:
+        print(f"[orchestrator] Profile suggestion error: {e}")
 
 
 @app.post("/setup-twin")
@@ -994,8 +1242,9 @@ async def _process_queued_message(message: str) -> None:
     """
     print(f"[orchestrator] Processing queued message: {message}")
     try:
-        async for _event_type, _event_data in run_agent_loop_streaming(message):
-            pass  # drive the generator; events are not sent anywhere
+        async for event_type, event_data in run_agent_loop_streaming(message, source="suggestion"):
+            # Broadcast progress to /events so accepted suggestions are visible
+            await broadcast_event(event_type, event_data)
     except Exception as exc:
         print(f"[orchestrator] Queued message error: {exc}")
         async with job_lock:
@@ -1055,12 +1304,12 @@ async def chat(request: Request):
             async with job_lock:
                 current_job["state"] = "error"
         finally:
+            # Fire pattern-based suggestions (Layer 2)
+            asyncio.create_task(_check_pattern_suggestions())
+
             # Always return to idle state after stream ends
             async with job_lock:
                 await set_job_state("idle")
-                # Drain the message queue: if there are queued messages, start
-                # processing the next one as a background task so it is not
-                # silently dropped.
                 if current_job["message_queue"]:
                     next_message = current_job["message_queue"].pop(0)
                     await set_job_state("thinking", task=next_message)
@@ -1077,9 +1326,119 @@ async def chat(request: Request):
     )
 
 
+# ---------------------------------------------------------------------------
+# Persistent SSE — GET /events (suggestion push channel)
+# ---------------------------------------------------------------------------
+
+@app.get("/events")
+async def events(request: Request):
+    """Persistent SSE stream for proactive suggestions."""
+    client_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    event_clients.append(client_queue)
+    print(f"[orchestrator] /events client connected ({len(event_clients)} total)")
+
+    async def event_stream():
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(client_queue.get(), timeout=15.0)
+                    yield payload
+                except asyncio.TimeoutError:
+                    yield f"event: ping\ndata: {{}}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if client_queue in event_clients:
+                event_clients.remove(client_queue)
+            print(f"[orchestrator] /events client disconnected ({len(event_clients)} total)")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Suggestion response — accept/dismiss/modify
+# ---------------------------------------------------------------------------
+
+@app.post("/suggestion/respond")
+async def suggestion_respond(request: Request):
+    """Handle user response to a proactive suggestion. Logs reward, optionally starts job."""
+    body = await request.json()
+    suggestion_id = body.get("suggestion_id", "")
+    action = body.get("action", "")
+
+    if not suggestion_id or action not in ("accept", "dismiss", "modify"):
+        return JSONResponse(status_code=400, content={
+            "error": "Required: suggestion_id, action (accept/dismiss/modify)"
+        })
+
+    reward = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "suggestion_id": suggestion_id,
+        "action": action,
+        "modification": body.get("modification") if action == "modify" else None,
+        "profile_name": cached_profile.get("name", "") if cached_profile else "",
+        "conversation_length": len(_conversation_history),
+    }
+    try:
+        rewards_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(rewards_path, "a") as f:
+            f.write(json.dumps(reward) + "\n")
+    except IOError as e:
+        print(f"[orchestrator] WARNING: Failed to write reward: {e}")
+
+    # Smart silence: adaptive backoff on consecutive dismissals
+    global ambient_interval
+    if action == "dismiss":
+        recent_rewards = []
+        try:
+            if rewards_path.exists():
+                with open(rewards_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            recent_rewards.append(json.loads(line))
+        except (IOError, json.JSONDecodeError):
+            pass
+        consecutive = 0
+        for r in reversed(recent_rewards):
+            if r.get("action") == "dismiss":
+                consecutive += 1
+            else:
+                break
+        if consecutive >= 2:
+            ambient_interval = min(ambient_interval * 2, 120.0)
+            print(f"[orchestrator] Smart silence: {consecutive} dismissals, interval -> {ambient_interval}s")
+    elif action == "accept":
+        ambient_interval = 30.0
+
+    await broadcast_event(f"suggestion_{action}ed" if action != "modify" else "suggestion_modified", {
+        "id": suggestion_id,
+    })
+
+    if action in ("accept", "modify"):
+        task_description = body.get("description", "")
+        if action == "modify" and body.get("modification"):
+            task_description = body["modification"]
+        if task_description:
+            async with job_lock:
+                if current_job["state"] not in ("idle", "complete", "error"):
+                    current_job["message_queue"].append(task_description)
+                    return {"status": "queued", "position": len(current_job["message_queue"]), "message": "Got it, I'll do that next."}
+                await set_job_state("thinking", task=task_description)
+            asyncio.create_task(_process_queued_message(task_description))
+            return {"status": "executing", "message": "On it!"}
+
+    return {"status": "ok", "action": action}
+
+
 @app.post("/reset")
 async def reset():
     """Reset all state for demo transitions."""
+    global _conversation_history, _chat_session_id, cached_profile, _cookies_synced, _cookies_sync_offered
     async with job_lock:
         current_job["id"] = None
         current_job["state"] = "idle"
@@ -1087,8 +1446,13 @@ async def reset():
         current_job["actions"] = []
         current_job["started_at"] = None
         current_job["message_queue"] = []
-    print("[orchestrator] State reset to idle")
-    return {"status": "ok", "message": "State cleared"}
+    _conversation_history = []
+    _chat_session_id = uuid.uuid4().hex
+    cached_profile = None
+    _cookies_synced = False
+    _cookies_sync_offered = False
+    print("[orchestrator] State reset to idle, conversation history cleared")
+    return {"status": "ok", "message": "State and conversation history cleared"}
 
 
 # ---------------------------------------------------------------------------

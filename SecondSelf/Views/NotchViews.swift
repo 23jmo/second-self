@@ -6,10 +6,31 @@ import SwiftUI
 /// DynamicNotchKit sees this as one "expanded" view, but we swap content internally.
 struct ExpandedNotchContent: View {
     @ObservedObject var chatViewModel: ChatViewModel
+    @ObservedObject var authManager: GoogleAuthManager
+
+    // Medium expansion: cycling status text
+    @State private var currentWordIndex = 0
+    @State private var dotPulsePhase = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
-            if chatViewModel.expansionStage >= 2 {
+            if !authManager.isAuthenticated {
+                // Not signed in — show sign-in view
+                if chatViewModel.expansionStage >= 2 {
+                    signInExpandedContent
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                } else {
+                    signInMiniContent
+                        .transition(.asymmetric(
+                            insertion: .opacity,
+                            removal: .opacity.combined(with: .move(edge: .bottom))
+                        ))
+                }
+            } else if chatViewModel.expansionStage >= 2 {
                 fullChatContent
                     .transition(.asymmetric(
                         insertion: .opacity.combined(with: .move(edge: .bottom)),
@@ -24,51 +45,21 @@ struct ExpandedNotchContent: View {
             }
         }
         .animation(.ssPanelSpring, value: chatViewModel.expansionStage)
+        .animation(.ssPanelSpring, value: authManager.isAuthenticated)
         .environment(\.colorScheme, .dark)
     }
 
-    // MARK: - Stage 1: Status Mini View
+    // MARK: - Sign In: Mini (stage 1)
 
-    private var statusMiniContent: some View {
+    private var signInMiniContent: some View {
         HStack(spacing: 10) {
-            // Twin character
-            TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
-                .frame(width: 28, height: 28)
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 16))
+                .foregroundColor(Color.ssTwinGreen)
 
-            // Status chip
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(chatViewModel.isConnected ? Color.ssSuccess : Color.ssError)
-                    .frame(width: 5, height: 5)
-                Text(statusText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Color.ssTextSecondary)
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                Capsule()
-                    .fill(Color.ssUserBubble)
-            )
-
-            // Twin state chip (only when active)
-            if chatViewModel.twinState == .working || chatViewModel.twinState == .thinking {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.ssTwinGreen)
-                        .frame(width: 5, height: 5)
-                    Text(chatViewModel.twinState == .thinking ? "Thinking" : "Working")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color.ssTwinGreen)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    Capsule()
-                        .fill(Color.ssTwinGreen.opacity(0.15))
-                )
-                .transition(.scale.combined(with: .opacity))
-            }
+            Text("Sign in to get started")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color.ssTextSecondary)
 
             Spacer()
         }
@@ -76,37 +67,162 @@ struct ExpandedNotchContent: View {
         .frame(width: 300, height: 36)
         .contentShape(Rectangle())
         .onTapGesture { chatViewModel.onNotchTap?() }
-        .animation(.ssContentReveal, value: chatViewModel.twinState)
     }
 
-    // MARK: - Stage 2: Full Chat (matches Figma 90:102)
+    // MARK: - Sign In: Expanded (stage 2)
+
+    private var signInExpandedContent: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            VStack(spacing: 6) {
+                Text("Second Self")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(Color.ssTextPrimary)
+
+                Text("Sign in to activate your digital twin")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.ssTextSecondary)
+            }
+
+            Button(action: { authManager.signIn() }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.fill")
+                        .font(.system(size: 16))
+                    Text("Sign in with Google")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.ssTwinGreen)
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(authManager.isAuthenticating)
+
+            if authManager.isAuthenticating {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.7)
+                    Text("Waiting for sign-in...")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.ssTextSecondary)
+                }
+            }
+
+            if let error = authManager.errorMessage {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundColor(Color.ssError)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+
+            Spacer()
+        }
+        .frame(width: 420, height: 300)
+        .background(Color.ssNotchBlack)
+    }
+
+    // MARK: - Stage 1: Medium Expansion Bar (personality bar)
+
+    private var isActiveState: Bool {
+        chatViewModel.twinState == .thinking || chatViewModel.twinState == .working
+    }
+
+    private var statusMiniContent: some View {
+        HStack(spacing: 12) {
+            // Mascot
+            TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
+                .frame(width: 32, height: 32)
+
+            // Status text with crossfade
+            ZStack {
+                Text(displayText)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(Color.ssTextPrimary)
+                    .id(displayText)
+                    .transition(.opacity)
+            }
+            .animation(.ssContentReveal, value: displayText)
+
+            Spacer()
+
+            // Status indicator
+            statusIndicator
+        }
+        .padding(.horizontal, 14)
+        .frame(width: 360, height: 56)
+        .contentShape(Rectangle())
+        .onTapGesture { chatViewModel.onNotchTap?() }
+        .task(id: isActiveState) {
+            guard isActiveState else {
+                withAnimation(.ssMicro) { dotPulsePhase = false }
+                return
+            }
+            // Randomize starting word each time twin becomes active
+            currentWordIndex = Int.random(in: 0..<ThinkingWords.all.count)
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                dotPulsePhase = true
+            }
+            // Cycle words every 2.5s while active
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2.5))
+                guard !Task.isCancelled else { break }
+                currentWordIndex = (currentWordIndex + 1) % ThinkingWords.all.count
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Twin status: \(accessibilityStatusText)")
+    }
+
+    // MARK: - Stage 2: Full Chat (matches Figma 136:996)
 
     private var fullChatContent: some View {
         VStack(spacing: 0) {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // VNC PiP: appears when agent starts working, stays until user dismisses
+            // VNC PiP: shows on computer-use tool calls, fills remaining space
             if chatViewModel.showVNCFeed {
-                ZStack(alignment: .topTrailing) {
+                ZStack {
                     VNCPipView(twinState: chatViewModel.twinState)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 220)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Dismiss button overlaid on stream
-                    Button(action: { chatViewModel.dismissVNCFeed() }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white.opacity(0.7))
-                            .padding(5)
-                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    // Dismiss button — top right
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Button(action: { chatViewModel.dismissVNCFeed() }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .padding(5)
+                                    .background(Circle().fill(Color.black.opacity(0.5)))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(6)
+                        }
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
-                    .padding(6)
+
+                    // Twin character — bottom right
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            TwinCharacterView(twinState: chatViewModel.twinState)
+                                .frame(width: 72, height: 99)
+                                .offset(x: 4, y: 10)
+                        }
+                    }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 5))
                 .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
@@ -126,17 +242,61 @@ struct ExpandedNotchContent: View {
             .padding(.bottom, 12)
             .onAppear { chatViewModel.checkMicPermission() }
         }
-        .frame(width: 420, height: 560)
+        .frame(width: 420, height: chatViewModel.showVNCFeed ? 760 : 560)
         .background(Color.ssNotchBlack)
+        .animation(.ssPanelSpring, value: chatViewModel.showVNCFeed)
     }
 
-    private var statusText: String {
-        if !chatViewModel.isConnected { return "Connecting..." }
+    // MARK: - Medium Expansion Helpers
+
+    private var displayText: String {
+        if !chatViewModel.isConnected {
+            return "Waking up..."
+        }
+        if reduceMotion && isActiveState {
+            return chatViewModel.twinState == .thinking ? "Thinking..." : "Working..."
+        }
+        switch chatViewModel.twinState {
+        case .idle:              return "Ready"
+        case .thinking, .working:
+            return ThinkingWords.all[currentWordIndex % ThinkingWords.all.count]
+        case .complete:          return "Done!"
+        case .error:             return "Oops"
+        }
+    }
+
+    @ViewBuilder
+    private var statusIndicator: some View {
+        if chatViewModel.twinState == .complete {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 10))
+                .foregroundColor(Color.ssSuccess)
+                .transition(.scale.combined(with: .opacity))
+        } else {
+            Circle()
+                .fill(statusDotColor)
+                .frame(width: 5, height: 5)
+                .opacity(dotPulsePhase ? 0.3 : 1.0)
+        }
+    }
+
+    private var statusDotColor: Color {
+        if !chatViewModel.isConnected { return Color.ssError }
+        switch chatViewModel.twinState {
+        case .idle:               return Color.ssSuccess
+        case .thinking, .working: return Color.ssTwinGreen
+        case .complete:           return Color.ssSuccess
+        case .error:              return Color.ssError
+        }
+    }
+
+    private var accessibilityStatusText: String {
+        if !chatViewModel.isConnected { return "Connecting" }
         switch chatViewModel.twinState {
         case .idle:     return "Ready"
-        case .thinking: return "Thinking..."
-        case .working:  return "Working..."
-        case .complete: return "Done"
+        case .thinking: return "Thinking"
+        case .working:  return "Working"
+        case .complete: return "Complete"
         case .error:    return "Error"
         }
     }
@@ -146,12 +306,30 @@ struct ExpandedNotchContent: View {
 
 struct CompactLeadingContent: View {
     @ObservedObject var chatViewModel: ChatViewModel
+    @ObservedObject var authManager: GoogleAuthManager
+    @State private var pulsePhase: Bool = false
 
     var body: some View {
-        TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
-            .frame(width: 24, height: 24)
+        if authManager.isAuthenticated {
+            TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
+                .onTapGesture { chatViewModel.onNotchTap?() }
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 12))
+                    .foregroundColor(Color.ssTwinGreen)
+                Text("Sign in")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Color.ssTwinGreen)
+            }
+            .opacity(pulsePhase ? 1.0 : 0.5)
+            .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulsePhase)
+            .onAppear { pulsePhase = true }
             .contentShape(Rectangle())
             .onTapGesture { chatViewModel.onNotchTap?() }
+        }
     }
 }
 

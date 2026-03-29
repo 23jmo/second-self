@@ -8,30 +8,46 @@ struct ChatView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.messages) { message in
-                            messageView(for: message)
-                                .id(message.id)
-                                .transition(transitionForMessage(message))
-                        }
+            VStack(spacing: 0) {
+                // Suggestion banner (slides in from top)
+                if let suggestion = viewModel.currentSuggestion {
+                    SuggestionBanner(
+                        suggestion: suggestion,
+                        onAccept: { viewModel.acceptSuggestion() },
+                        onDismiss: { viewModel.dismissSuggestion() },
+                        onTellMeMore: { viewModel.tellMeMore() }
+                    )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, 28)
+                    .padding(.horizontal, 19)
+                    .zIndex(1)
+                }
 
-                        if viewModel.twinState == .thinking || viewModel.twinState == .working {
-                            TwinWorkingIndicator()
-                                .id("working-indicator")
-                                .transition(.ssTwinMessage)
+                ScrollViewReader { scrollProxy in
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(viewModel.messages) { message in
+                                messageView(for: message)
+                                    .id(message.id)
+                                    .transition(transitionForMessage(message))
+                            }
+
+                            if viewModel.twinState == .thinking || viewModel.twinState == .working {
+                                TwinWorkingIndicator()
+                                    .id("working-indicator")
+                                    .transition(.ssTwinMessage)
+                            }
                         }
                     }
                     .padding(.horizontal, 19)
                     .padding(.top, 26)
                     .padding(.bottom, 12)
                     .animation(.ssMessageEntrance, value: viewModel.messages.count)
-                }
-                .onChange(of: viewModel.messages.count) { _ in
-                    withAnimation(.ssScrollSpring) {
-                        if let lastMessage = viewModel.messages.last {
-                            scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
+                    .onChange(of: viewModel.messages.count) { _ in
+                        withAnimation(.ssScrollSpring) {
+                            if let lastMessage = viewModel.messages.last {
+                                scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
+                            }
                         }
                     }
                 }

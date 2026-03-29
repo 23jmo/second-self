@@ -3,72 +3,123 @@ import AppKit
 
 // MARK: - VNC PiP View
 
-/// Picture-in-picture VNC feed thumbnail.
+/// Picture-in-picture VNC feed with liquid glass styling.
+/// Header bar with traffic lights, "Twin's Desktop" title, and LIVE indicator.
 /// Native MJPEG parser using URLSession (no WKWebView, no ATS issues).
-/// Olive-green glow when Twin is working. Click to expand.
 struct VNCPipView: View {
     let twinState: TwinState
 
     @StateObject private var streamer = MJPEGStreamer()
     @State private var isHovered: Bool = false
-    @State private var glowPhase: Bool = false
+    @State private var liveBlink: Bool = false
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Live desktop feed
-            Group {
-                if let image = streamer.currentFrame {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    Rectangle()
-                        .fill(Color.ssBackground)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(
-                        twinState == .working ? Color.ssTwinGreen : Color.ssBorder,
-                        lineWidth: twinState == .working ? 1.5 : 0.5
-                    )
-            )
-            .shadow(
-                color: twinState == .working
-                    ? Color.ssTwinGreen.opacity(glowPhase ? 0.3 : 0.1)
-                    : Color.black.opacity(0.3),
-                radius: twinState == .working ? 8 : 4
-            )
+        VStack(spacing: 0) {
+            // Header bar — traffic lights, title, LIVE indicator
+            headerBar
 
-            // Take Control button — launches TigerVNC on hover
-            if isHovered {
-                Button(action: { launchTigerVNC() }) {
-                    Text("Take Control")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.ssTwinGreen.opacity(0.85)))
+            // Live desktop feed — fills all remaining space
+            ZStack(alignment: .bottomTrailing) {
+                Group {
+                    if let image = streamer.currentFrame {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        // Glass-like gradient placeholder
+                        LinearGradient(
+                            colors: [
+                                Color(hex: 0x262629),
+                                Color(hex: 0x262629).opacity(0.6),
+                                Color.white.opacity(0.05)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
                 }
-                .buttonStyle(.plain)
-                .padding(.bottom, 8)
-                .transition(.opacity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+
+                // Take Control overlay on hover
+                if isHovered {
+                    Button(action: { launchTigerVNC() }) {
+                        Text("Take Control")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule()
+                                    .fill(.ultraThinMaterial)
+                                    .overlay(
+                                        Capsule()
+                                            .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(10)
+                    .transition(.opacity)
+                }
             }
         }
+        .background(Color(hex: 0x1A1A1D))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+        )
         .animation(.ssMicro, value: isHovered)
-        .animation(.ssGlowPulse.repeatForever(autoreverses: true), value: glowPhase)
-        .onHover { hovering in
-            isHovered = hovering
-        }
+        .onHover { hovering in isHovered = hovering }
         .onAppear {
             streamer.start()
-            glowPhase = true
+            withAnimation(.ssLiveBlink.repeatForever(autoreverses: true)) {
+                liveBlink = true
+            }
         }
         .onDisappear {
             streamer.stop()
         }
+    }
+
+    // MARK: - Header Bar
+
+    private var headerBar: some View {
+        HStack(spacing: 0) {
+            // Traffic light dots
+            HStack(spacing: 4) {
+                Circle().fill(Color(hex: 0xFF5F57)).frame(width: 6, height: 6)
+                Circle().fill(Color(hex: 0xFEBC2E)).frame(width: 6, height: 6)
+                Circle().fill(Color(hex: 0x28C840)).frame(width: 6, height: 6)
+            }
+            .padding(.leading, 8)
+
+            Spacer()
+
+            // Title
+            Text("Twin's Desktop")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundColor(.white.opacity(0.5))
+                .tracking(0.64)
+
+            Spacer()
+
+            // LIVE indicator
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(Color.ssTwinGreen)
+                    .frame(width: 5, height: 5)
+                    .opacity(liveBlink ? 1.0 : 0.3)
+                Text("LIVE")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundColor(Color.ssTwinGreen)
+                    .tracking(0.64)
+            }
+            .padding(.trailing, 8)
+        }
+        .frame(height: 18)
+        .background(Color(hex: 0x1A1A1D))
     }
 
     private func launchTigerVNC() {

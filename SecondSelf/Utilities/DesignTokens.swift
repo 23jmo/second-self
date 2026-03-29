@@ -102,6 +102,9 @@ enum SSEEventType: String {
     case componentStart = "component_start"
     case componentDelta = "component_delta"
     case componentEnd = "component_end"
+    case suggestion
+    case suggestionAccepted = "suggestion_accepted"
+    case suggestionDismissed = "suggestion_dismissed"
 }
 
 enum ServerConfig {
@@ -113,4 +116,39 @@ enum ServerConfig {
     static let agentStreamURL = "http://localhost:\(agentServerPort)/stream"
     static let chatEndpoint = "\(orchestratorURL)/chat"
     static let sessionEndpoint = "\(backendURL)/session/latest"
+    static let eventsEndpoint = "\(orchestratorURL)/events"
+    static let suggestionRespondEndpoint = "\(orchestratorURL)/suggestion/respond"
+}
+
+// MARK: - Thinking Words
+// Whimsical words cycled in the medium expansion bar during thinking/working states.
+
+enum ThinkingWords {
+    static let all: [String] = [
+        "Fnagling...",
+        "Ruminating...",
+        "Bamboozling...",
+        "Cogitating...",
+        "Moonwalking...",
+        "Hypothesizing...",
+        "Shipping...",
+        "Cooking...",
+        "Ideating...",
+        "Ramtazzling...",
+        "Lollygagging...",
+        "Brodyshmodying...",
+        "Hootin' n' hollerin'...",
+        "Percolating...",
+        "Discombobulating...",
+        "Pontificating...",
+        "Gallivanting...",
+        "Skedaddling...",
+        "Confabulating...",
+        "Shenanigizing...",
+        "Tomfoolering...",
+        "Hullaballooing...",
+        "Kerfuffling...",
+        "Razzle-dazzling...",
+        "Noodling...",
+    ]
 }

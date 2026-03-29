@@ -74,7 +74,7 @@ final class NotchPanel: NSPanel {
     func sizeForCurrentState() -> NSSize {
         switch viewModel.panelState {
         case .collapsed:
-            return NSSize(width: Theme.collapsedWidth, height: Theme.collapsedHeight)
+            return NSSize(width: Theme.collapsedWidth, height: Theme.collapsedHeight + PeepingMascot.hangHeight)
         case .preview:
             return NSSize(width: Theme.previewWidth, height: Theme.previewHeight)
         case .expanded:
