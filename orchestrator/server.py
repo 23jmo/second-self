@@ -17,6 +17,7 @@ Layer 0: FastAPI with job state machine and SSE streaming.
 import asyncio
 import json
 import os
+import pathlib
 import sys
 import time
 import uuid
@@ -40,6 +41,7 @@ from productivity_tools import (
     PRODUCTIVITY_TOOL_NAMES,
     execute_productivity_tool,
 )
+from suggestion_engine import profile_trigger, pattern_trigger, ambient_tick
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
@@ -148,7 +150,32 @@ current_job: dict = {
     "message_queue": [],
 }
 
-# Conversation history and cached profile kept across jobs
+# ---------------------------------------------------------------------------
+# Session state — persists across jobs, cleared on /reset
+# ---------------------------------------------------------------------------
+
+conversation_history: list[dict] = []
+cached_profile: dict | None = None
+rewards_path = pathlib.Path.home() / ".secondself" / "rewards.jsonl"
+
+# ---------------------------------------------------------------------------
+# Persistent SSE broadcast — GET /events channel
+# ---------------------------------------------------------------------------
+
+event_clients: list[asyncio.Queue] = []
+
+
+async def broadcast_event(event_type: str, data: dict) -> None:
+    """Push an event to all connected /events SSE clients."""
+    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    disconnected = []
+    for q in event_clients:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            disconnected.append(q)
+    for q in disconnected:
+        event_clients.remove(q)
 
 
 async def set_job_state(state: str, task: str | None = None, message: str | None = None) -> None:
@@ -520,6 +547,9 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
     """
     yield ("state", {"state": "thinking"})
 
+    # Record user message in session history
+    conversation_history.append({"role": "user", "content": task})
+
     messages: list = [{"role": "user", "content": task}]
 
     for step in range(max_steps):
@@ -567,6 +597,7 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15):
 
         # If no tool calls, we're done
         if stop_reason == "end_turn" or not tool_calls:
+            conversation_history.append({"role": "assistant", "content": text_content or "Task complete."})
             yield ("state", {"state": "complete", "message": text_content or "Task complete."})
             async with job_lock:
                 current_job["state"] = "complete"
@@ -678,13 +709,64 @@ async def handle_anticipatory_setup(profile: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Suggestion triggers (async wrappers)
+# ---------------------------------------------------------------------------
+
+async def _check_pattern_suggestions() -> None:
+    """Run pattern detection in a thread and broadcast any suggestions."""
+    try:
+        suggestions = await asyncio.to_thread(
+            pattern_trigger, conversation_history, cached_profile
+        )
+        for suggestion in suggestions:
+            await broadcast_event("suggestion", suggestion)
+    except Exception as e:
+        print(f"[orchestrator] Pattern trigger error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Ambient awareness loop (Layer 3)
+# ---------------------------------------------------------------------------
+
+ambient_loop_task: asyncio.Task | None = None
+ambient_interval: float = 30.0
+
+
+async def _ambient_loop() -> None:
+    """Background task: runs ambient_tick every ambient_interval seconds."""
+    global ambient_interval
+    failure_backoff = 30.0
+    await asyncio.sleep(10)  # stabilize before first tick
+
+    while True:
+        try:
+            await asyncio.sleep(ambient_interval)
+            if current_job["state"] in ("thinking", "working"):
+                continue
+            if cached_profile is None:
+                continue
+            suggestions = await asyncio.to_thread(
+                ambient_tick, conversation_history, cached_profile
+            )
+            for suggestion in suggestions:
+                await broadcast_event("suggestion", suggestion)
+            failure_backoff = 30.0
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[orchestrator] Ambient loop error: {e}")
+            failure_backoff = min(failure_backoff * 2, 120.0)
+            await asyncio.sleep(failure_backoff)
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Startup / shutdown lifecycle."""
-    global _google_access_token
+    global _google_access_token, ambient_loop_task
 
     if not ANTHROPIC_API_KEY:
         print("[orchestrator] WARNING: ANTHROPIC_API_KEY not set. Set it: export ANTHROPIC_API_KEY=your_key")
@@ -716,7 +798,14 @@ async def lifespan(application: FastAPI):
     print(f"[orchestrator] Agent Server expected at {AGENT_SERVER_URL}")
     print(f"[orchestrator] Model: {CLAUDE_MODEL}")
     print(f"[orchestrator] Tools: {len(ALL_TOOLS)} ({len(BROWSER_TOOLS)} browser, {len(DESKTOP_TOOLS)} desktop, {len(UI_TOOLS)} UI, {len(PRODUCTIVITY_TOOLS)} productivity)")
+
+    ambient_loop_task = asyncio.create_task(_ambient_loop())
+    print("[orchestrator] Ambient suggestion loop started (30s interval)")
+
     yield
+
+    if ambient_loop_task:
+        ambient_loop_task.cancel()
     print("[orchestrator] Shutting down")
 
 
@@ -792,6 +881,14 @@ async def profile(request: Request):
         return JSONResponse(status_code=400, content={"error": "missing 'name' field"})
     print(f"[orchestrator] Profiling: {name}")
     result = await handle_profile(name)
+    global cached_profile
+    cached_profile = result
+
+    # Fire profile-based suggestions (Layer 1)
+    suggestions = await asyncio.to_thread(profile_trigger, result)
+    for suggestion in suggestions:
+        await broadcast_event("suggestion", suggestion)
+
     return result
 
 
@@ -904,12 +1001,12 @@ async def chat(request: Request):
             async with job_lock:
                 current_job["state"] = "error"
         finally:
+            # Fire pattern-based suggestions (Layer 2)
+            asyncio.create_task(_check_pattern_suggestions())
+
             # Always return to idle state after stream ends
             async with job_lock:
                 await set_job_state("idle")
-                # Drain the message queue: if there are queued messages, start
-                # processing the next one as a background task so it is not
-                # silently dropped.
                 if current_job["message_queue"]:
                     next_message = current_job["message_queue"].pop(0)
                     await set_job_state("thinking", task=next_message)
@@ -926,9 +1023,119 @@ async def chat(request: Request):
     )
 
 
+# ---------------------------------------------------------------------------
+# Persistent SSE — GET /events (suggestion push channel)
+# ---------------------------------------------------------------------------
+
+@app.get("/events")
+async def events(request: Request):
+    """Persistent SSE stream for proactive suggestions."""
+    client_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    event_clients.append(client_queue)
+    print(f"[orchestrator] /events client connected ({len(event_clients)} total)")
+
+    async def event_stream():
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(client_queue.get(), timeout=15.0)
+                    yield payload
+                except asyncio.TimeoutError:
+                    yield f"event: ping\ndata: {{}}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if client_queue in event_clients:
+                event_clients.remove(client_queue)
+            print(f"[orchestrator] /events client disconnected ({len(event_clients)} total)")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Suggestion response — accept/dismiss/modify
+# ---------------------------------------------------------------------------
+
+@app.post("/suggestion/respond")
+async def suggestion_respond(request: Request):
+    """Handle user response to a proactive suggestion. Logs reward, optionally starts job."""
+    body = await request.json()
+    suggestion_id = body.get("suggestion_id", "")
+    action = body.get("action", "")
+
+    if not suggestion_id or action not in ("accept", "dismiss", "modify"):
+        return JSONResponse(status_code=400, content={
+            "error": "Required: suggestion_id, action (accept/dismiss/modify)"
+        })
+
+    reward = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "suggestion_id": suggestion_id,
+        "action": action,
+        "modification": body.get("modification") if action == "modify" else None,
+        "profile_name": cached_profile.get("name", "") if cached_profile else "",
+        "conversation_length": len(conversation_history),
+    }
+    try:
+        rewards_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(rewards_path, "a") as f:
+            f.write(json.dumps(reward) + "\n")
+    except IOError as e:
+        print(f"[orchestrator] WARNING: Failed to write reward: {e}")
+
+    # Smart silence: adaptive backoff on consecutive dismissals
+    global ambient_interval
+    if action == "dismiss":
+        recent_rewards = []
+        try:
+            if rewards_path.exists():
+                with open(rewards_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            recent_rewards.append(json.loads(line))
+        except (IOError, json.JSONDecodeError):
+            pass
+        consecutive = 0
+        for r in reversed(recent_rewards):
+            if r.get("action") == "dismiss":
+                consecutive += 1
+            else:
+                break
+        if consecutive >= 2:
+            ambient_interval = min(ambient_interval * 2, 120.0)
+            print(f"[orchestrator] Smart silence: {consecutive} dismissals, interval -> {ambient_interval}s")
+    elif action == "accept":
+        ambient_interval = 30.0
+
+    await broadcast_event(f"suggestion_{action}ed" if action != "modify" else "suggestion_modified", {
+        "id": suggestion_id,
+    })
+
+    if action in ("accept", "modify"):
+        task_description = body.get("description", "")
+        if action == "modify" and body.get("modification"):
+            task_description = body["modification"]
+        if task_description:
+            async with job_lock:
+                if current_job["state"] not in ("idle", "complete", "error"):
+                    current_job["message_queue"].append(task_description)
+                    return {"status": "queued", "position": len(current_job["message_queue"]), "message": "Got it, I'll do that next."}
+                await set_job_state("thinking", task=task_description)
+            asyncio.create_task(_process_queued_message(task_description))
+            return {"status": "executing", "message": "On it!"}
+
+    return {"status": "ok", "action": action}
+
+
 @app.post("/reset")
 async def reset():
-    """Reset all state for demo transitions."""
+    """Reset all state for demo transitions. /events stays open. rewards.jsonl is cumulative."""
+    global cached_profile
     async with job_lock:
         current_job["id"] = None
         current_job["state"] = "idle"
@@ -936,7 +1143,9 @@ async def reset():
         current_job["actions"] = []
         current_job["started_at"] = None
         current_job["message_queue"] = []
-    print("[orchestrator] State reset to idle")
+    conversation_history.clear()
+    cached_profile = None
+    print("[orchestrator] State reset to idle (conversation + profile cleared)")
     return {"status": "ok", "message": "State cleared"}
 
 

@@ -99,6 +99,9 @@ enum SSEEventType: String {
     case componentStart = "component_start"
     case componentDelta = "component_delta"
     case componentEnd = "component_end"
+    case suggestion
+    case suggestionAccepted = "suggestion_accepted"
+    case suggestionDismissed = "suggestion_dismissed"
 }
 
 enum ServerConfig {
@@ -107,4 +110,6 @@ enum ServerConfig {
     static let orchestratorURL = "http://localhost:\(orchestratorPort)"
     static let agentStreamURL = "http://localhost:\(agentServerPort)/stream"
     static let chatEndpoint = "\(orchestratorURL)/chat"
+    static let eventsEndpoint = "\(orchestratorURL)/events"
+    static let suggestionRespondEndpoint = "\(orchestratorURL)/suggestion/respond"
 }

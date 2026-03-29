@@ -3,8 +3,9 @@ import Combine
 
 // MARK: - Chat View Model
 
-/// Main view model managing chat messages, Twin state, and SSE connection
-/// to the orchestrator at http://localhost:8420/chat.
+/// Main view model managing chat messages, Twin state, SSE connections,
+/// and proactive suggestion handling.
+/// Two SSE connections: /chat (per-request) and /events (persistent).
 final class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var twinState: TwinState = .idle
@@ -24,6 +25,10 @@ final class ChatViewModel: ObservableObject {
     /// Callback for closing expanded notch. Set by NotchOverlayController.
     var onNotchClose: (() -> Void)?
 
+    // Proactive suggestion state
+    @Published var currentSuggestion: ProactiveSuggestion?
+    @Published var consecutiveDismissals: Int = 0
+
     private let orchestratorURL = URL(string: ServerConfig.chatEndpoint)!
     private var sseTask: URLSessionDataTask?
     private var reconnectTimer: Timer?
@@ -31,6 +36,7 @@ final class ChatViewModel: ObservableObject {
     private(set) var streamingComponentID: UUID?
     private let audioManager = AudioManager()
 
+    // Per-request SSE session for /chat
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 300 // 5 min for long SSE streams
@@ -42,6 +48,21 @@ final class ChatViewModel: ObservableObject {
         SSESessionDelegate(viewModel: self)
     }()
 
+    // Persistent SSE session for /events (suggestions)
+    private var eventsTask: URLSessionDataTask?
+    private var eventsReconnectTimer: Timer?
+
+    private lazy var eventsSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = .infinity  // persistent connection
+        config.timeoutIntervalForResource = .infinity
+        return URLSession(configuration: config, delegate: eventsDelegate, delegateQueue: .main)
+    }()
+
+    private lazy var eventsDelegate: EventsSSEDelegate = {
+        EventsSSEDelegate(viewModel: self)
+    }()
+
     init() {
         // Start with a welcome message from the Twin
         let welcome = ChatMessage(
@@ -51,6 +72,9 @@ final class ChatViewModel: ObservableObject {
             timestamp: Date()
         )
         messages.append(welcome)
+
+        // Connect to persistent /events SSE stream
+        connectToEventsStream()
     }
 
     // MARK: - VNC Feed
@@ -158,8 +182,107 @@ final class ChatViewModel: ObservableObject {
         case .componentStart, .componentDelta, .componentEnd:
             break // Reserved for future streaming component support
 
+        case .suggestion:
+            handleSuggestionEvent(data: data)
+
+        case .suggestionAccepted, .suggestionDismissed:
+            // Acknowledgements from server, clear if it matches current
+            if let jsonData = data.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+               let id = json["id"] as? String,
+               currentSuggestion?.id == id {
+                currentSuggestion = nil
+            }
+
         case .ping:
             break
+        }
+    }
+
+    // MARK: - Suggestion Handling
+
+    private func handleSuggestionEvent(data: String) {
+        guard let jsonData = data.data(using: .utf8) else { return }
+        do {
+            let suggestion = try JSONDecoder().decode(ProactiveSuggestion.self, from: jsonData)
+            // Show newest suggestion, drop any unseen older one
+            currentSuggestion = suggestion
+            print("[ChatViewModel] Suggestion received: \(suggestion.title) (source: \(suggestion.source.rawValue))")
+        } catch {
+            print("[ChatViewModel] Failed to decode suggestion: \(error)")
+        }
+    }
+
+    func acceptSuggestion() {
+        guard let suggestion = currentSuggestion else { return }
+        consecutiveDismissals = 0
+        respondToSuggestion(suggestion: suggestion, action: "accept")
+        currentSuggestion = nil
+    }
+
+    func dismissSuggestion() {
+        guard let suggestion = currentSuggestion else { return }
+        consecutiveDismissals += 1
+        respondToSuggestion(suggestion: suggestion, action: "dismiss")
+        currentSuggestion = nil
+    }
+
+    func tellMeMore() {
+        guard let suggestion = currentSuggestion else { return }
+        // Send a message asking the twin to explain the suggestion
+        let explainPrompt = "Explain why you suggested: \"\(suggestion.title)\". "
+            + "What's your reasoning? What would you do if I accept?"
+        sendMessage(text: explainPrompt)
+        currentSuggestion = nil
+    }
+
+    private func respondToSuggestion(suggestion: ProactiveSuggestion, action: String) {
+        let url = URL(string: ServerConfig.suggestionRespondEndpoint)!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload: [String: Any] = [
+            "suggestion_id": suggestion.id,
+            "action": action,
+            "description": suggestion.description,
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            if let error = error {
+                print("[ChatViewModel] Suggestion respond error: \(error)")
+            }
+        }.resume()
+    }
+
+    // MARK: - Persistent /events SSE Connection
+
+    private func connectToEventsStream() {
+        let url = URL(string: ServerConfig.eventsEndpoint)!
+        var request = URLRequest(url: url)
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+        eventsTask?.cancel()
+        eventsTask = eventsSession.dataTask(with: request)
+        eventsTask?.resume()
+        print("[ChatViewModel] Connecting to /events stream")
+    }
+
+    func handleEventsStreamComplete() {
+        // Persistent stream closed, reconnect after delay
+        scheduleEventsReconnect()
+    }
+
+    func handleEventsStreamError(_ error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        scheduleEventsReconnect()
+    }
+
+    private func scheduleEventsReconnect() {
+        eventsReconnectTimer?.invalidate()
+        eventsReconnectTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            self?.connectToEventsStream()
         }
     }
 
@@ -350,11 +473,13 @@ final class ChatViewModel: ObservableObject {
 
     deinit {
         sseTask?.cancel()
+        eventsTask?.cancel()
         reconnectTimer?.invalidate()
+        eventsReconnectTimer?.invalidate()
     }
 }
 
-// MARK: - SSE URLSession Delegate
+// MARK: - SSE URLSession Delegate (per-request /chat)
 
 /// Custom delegate that receives streaming data and parses SSE events.
 final class SSESessionDelegate: NSObject, URLSessionDataDelegate {
@@ -397,5 +522,46 @@ final class SSESessionDelegate: NSObject, URLSessionDataDelegate {
                 self?.viewModel?.isConnected = (httpResponse.statusCode == 200)
             }
         }
+    }
+}
+
+// MARK: - Events SSE Delegate (persistent /events)
+
+/// Separate delegate for the persistent /events SSE connection.
+/// Routes suggestion events to the same ChatViewModel.
+final class EventsSSEDelegate: NSObject, URLSessionDataDelegate {
+    private weak var viewModel: ChatViewModel?
+    private let parser = SSEParser()
+
+    init(viewModel: ChatViewModel) {
+        self.viewModel = viewModel
+        super.init()
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let text = String(data: data, encoding: .utf8) else { return }
+
+        let events = parser.parse(chunk: text)
+        for event in events {
+            // Route suggestion events through the same handler
+            viewModel?.handleSSEEvent(eventType: event.eventType, data: event.data)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error {
+            viewModel?.handleEventsStreamError(error)
+        } else {
+            viewModel?.handleEventsStreamComplete()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        completionHandler(.allow)
     }
 }
