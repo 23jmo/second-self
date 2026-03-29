@@ -11,7 +11,7 @@ enum MessageSender {
 
 enum MessageContent {
     case text(String)
-    case toolCall(tool: String, args: [String: String], result: String?)
+    case toolCall(tool: String, args: [String: String], result: String?, progress: String?)
     case component(A2UIPayload)
 }
 

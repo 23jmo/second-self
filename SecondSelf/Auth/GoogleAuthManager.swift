@@ -63,7 +63,7 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
         errorMessage = nil
 
         // The FastAPI server at :8000 redirects to Auth0 for Google sign-in
-        guard let authURL = URL(string: "http://localhost:8000/auth/google-login") else {
+        guard let authURL = URL(string: "http://localhost:8000/auth/login") else {
             errorMessage = "Invalid auth URL"
             isAuthenticating = false
             return

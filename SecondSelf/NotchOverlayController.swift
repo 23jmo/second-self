@@ -25,10 +25,15 @@ final class NotchOverlayController: NSObject {
     // Track current state: 0=compact, 1=status mini, 2=full chat
     private var isExpanded = false
 
-    // Peeping mascot: separate transparent window below the notch
+    // Peeping mascot (hover, stage 0): upside-down face peeking from center
     private var peepingWindow: NSWindow?
     private var peepingVisible = false
     private var hoverTrackingMonitor: Any?
+
+    // Dangling mascot (medium notch, stage 1): TwinPose2 at right edge
+    private var danglingWindow: NSWindow?
+    private var danglingVisible = false
+    private var danglingStageCancellable: AnyCancellable?
 
     // Floating VNC window below the notch panel
     private var vncWindow: NSWindow?
@@ -79,6 +84,8 @@ final class NotchOverlayController: NSObject {
         installLocalClickMonitor()
         installGlobalClickMonitor()
         setupPeepingWindow()
+        setupDanglingWindow()
+        installDanglingStageObserver()
         installHoverTracking()
         setupVNCWindow(viewModel: viewModel)
     }
@@ -97,13 +104,9 @@ final class NotchOverlayController: NSObject {
                 await dynamicNotch.expand()
                 isExpanded = true
             }
-            // Slide in the dangling mascot at the right edge
-            setPeepingVisible(true, position: .rightEdge)
         case 1:
             // Status mini → full chat: already expanded, just swap content
             chatViewModel.expansionStage = 2
-            // Hide dangling mascot when entering full chat
-            setPeepingVisible(false)
             // Make the panel key so the text field can receive keyboard focus
             makeNotchPanelKey()
         default:
@@ -118,9 +121,6 @@ final class NotchOverlayController: NSObject {
 
         // Hide floating VNC window when collapsing
         setVNCWindowVisible(false)
-
-        // Hide dangling mascot
-        setPeepingVisible(false)
 
         // Staged collapse: content fades first (200ms), then notch shape compacts
         chatViewModel.expansionStage = 0
@@ -167,7 +167,6 @@ final class NotchOverlayController: NSObject {
                     await dynamicNotch.expand()
                     isExpanded = true
                 }
-                setPeepingVisible(true, position: .rightEdge)
             }
 
         case .complete:
@@ -294,21 +293,20 @@ final class NotchOverlayController: NSObject {
         dynamicNotch.windowController?.window?.makeKeyAndOrderFront(nil)
     }
 
-    // MARK: - Peeping Mascot
+    // MARK: - Peeping Mascot (hover, stage 0)
 
-    private let mascotWidth: CGFloat = 50
-    private let mascotHeight: CGFloat = 72
+    private let peepMascotHeight: CGFloat = 70
 
     private func setupPeepingWindow() {
         guard let screen = NSScreen.main else { return }
         let notchFrame = Self.screenNotchFrame(screen)
+        let mascotWidth: CGFloat = 80
 
-        // Start hidden behind the notch bottom edge
         let windowFrame = NSRect(
             x: notchFrame.midX - mascotWidth / 2,
             y: notchFrame.minY,
             width: mascotWidth,
-            height: mascotHeight
+            height: peepMascotHeight
         )
 
         let window = NSWindow(
@@ -320,13 +318,13 @@ final class NotchOverlayController: NSObject {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.level = .statusBar + 1  // In front of the notch panel
+        window.level = .statusBar - 1
         window.ignoresMouseEvents = true
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
 
         let hostingView = NSHostingView(
-            rootView: DanglingMascotView()
-                .frame(width: mascotWidth, height: mascotHeight)
+            rootView: PeepingMascot(barHeight: 0, isVisible: true)
+                .frame(width: mascotWidth, height: peepMascotHeight)
         )
         hostingView.layer?.backgroundColor = .clear
         window.contentView = hostingView
@@ -339,89 +337,157 @@ final class NotchOverlayController: NSObject {
         hoverTrackingMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.mouseMoved]
         ) { [weak self] event in
-            guard let self = self, self.chatViewModel.expansionStage == 0 else {
-                // Don't dismiss if stage 1 — the mascot is intentionally shown there
-                if self?.peepingVisible == true && self?.chatViewModel.expansionStage != 1 {
-                    self?.setPeepingVisible(false)
-                }
-                return
-            }
-            let mouseLocation = NSEvent.mouseLocation
-            let notchRect = self.notchHitRect()
-            let isInNotchArea = notchRect.contains(mouseLocation)
-
-            if isInNotchArea && !self.peepingVisible {
-                self.setPeepingVisible(true, position: .center)
-            } else if !isInNotchArea && self.peepingVisible {
-                self.setPeepingVisible(false)
-            }
+            self?.handlePeepHover(mouseLocation: NSEvent.mouseLocation)
         }
 
-        // Also track local mouse moved (when our app is active)
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            guard let self = self, self.chatViewModel.expansionStage == 0 else {
-                if self?.peepingVisible == true && self?.chatViewModel.expansionStage != 1 {
-                    self?.setPeepingVisible(false)
-                }
-                return event
-            }
-            let mouseLocation = NSEvent.mouseLocation
-            let notchRect = self.notchHitRect()
-            let isInNotchArea = notchRect.contains(mouseLocation)
-
-            if isInNotchArea && !self.peepingVisible {
-                self.setPeepingVisible(true, position: .center)
-            } else if !isInNotchArea && self.peepingVisible {
-                self.setPeepingVisible(false)
-            }
+            self?.handlePeepHover(mouseLocation: NSEvent.mouseLocation)
             return event
         }
     }
 
-    /// Where to position the dangling mascot relative to the notch.
-    private enum PeepPosition {
-        case center     // For compact hover
-        case rightEdge  // For medium notch (stage 1)
+    private func handlePeepHover(mouseLocation: NSPoint) {
+        guard chatViewModel.expansionStage == 0 else { return }
+        let notchRect = notchHitRect()
+        let isInNotchArea = notchRect.contains(mouseLocation)
+
+        if isInNotchArea {
+            if !peepingVisible {
+                setPeepingVisible(true, cursorX: mouseLocation.x)
+            } else {
+                updatePeepingX(cursorX: mouseLocation.x)
+            }
+        } else if peepingVisible {
+            setPeepingVisible(false)
+        }
     }
 
-    private func setPeepingVisible(_ visible: Bool, position: PeepPosition = .center) {
-        peepingVisible = visible
-        guard let window = peepingWindow, let screen = NSScreen.main else {
-            print("[PEEP] ❌ guard failed: window=\(peepingWindow != nil) screen=\(NSScreen.main != nil)")
-            return
+    /// Smoothly slide the peeping window's X to follow the cursor.
+    private func updatePeepingX(cursorX: CGFloat) {
+        guard let window = peepingWindow, let screen = NSScreen.main else { return }
+        let notchFrame = Self.screenNotchFrame(screen)
+        let mascotWidth: CGFloat = 80
+
+        // Clamp X so the mascot stays within the notch width
+        let minX = notchFrame.minX
+        let maxX = notchFrame.maxX - mascotWidth
+        let targetX = (cursorX - mascotWidth / 2).clamped(to: minX...maxX)
+
+        // Lightweight animation — just reposition X, no alpha change
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            var frame = window.frame
+            frame.origin.x = targetX
+            window.animator().setFrame(frame, display: false)
         }
+    }
+
+    private func setPeepingVisible(_ visible: Bool) {
+        peepingVisible = visible
+        guard let window = peepingWindow, let screen = NSScreen.main else { return }
+
+        let notchFrame = Self.screenNotchFrame(screen)
+        let mascotWidth: CGFloat = 80
+        let hiddenY = notchFrame.minY
+        let visibleY = notchFrame.minY - 30
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = visible ? 1.0 : 0.0
+            window.animator().setFrame(
+                NSRect(
+                    x: notchFrame.midX - mascotWidth / 2,
+                    y: visible ? visibleY : hiddenY,
+                    width: mascotWidth,
+                    height: self.peepMascotHeight
+                ),
+                display: true
+            )
+        }
+    }
+
+    // MARK: - Dangling Mascot (medium notch, stage 1)
+
+    private let dangleWidth: CGFloat = 50
+    private let dangleHeight: CGFloat = 72
+
+    private func setupDanglingWindow() {
+        guard let screen = NSScreen.main else { return }
+        let notchFrame = Self.screenNotchFrame(screen)
+
+        let windowFrame = NSRect(
+            x: notchFrame.midX,
+            y: notchFrame.minY,
+            width: dangleWidth,
+            height: dangleHeight
+        )
+
+        let window = NSWindow(
+            contentRect: windowFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.level = .statusBar + 1
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+        let hostingView = NSHostingView(
+            rootView: DanglingMascotView()
+                .frame(width: dangleWidth, height: dangleHeight)
+        )
+        hostingView.layer?.backgroundColor = .clear
+        window.contentView = hostingView
+        window.alphaValue = 0
+        window.orderFront(nil)
+        danglingWindow = window
+    }
+
+    /// Watches expansion stage: show dangling mascot at stage 1, hide otherwise.
+    private func installDanglingStageObserver() {
+        danglingStageCancellable = chatViewModel.$expansionStage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] stage in
+                guard let self = self else { return }
+                if stage == 1 {
+                    self.setDanglingVisible(true)
+                } else if self.danglingVisible {
+                    self.setDanglingVisible(false)
+                }
+            }
+    }
+
+    private func setDanglingVisible(_ visible: Bool) {
+        danglingVisible = visible
+        guard let window = danglingWindow, let screen = NSScreen.main else { return }
 
         let notchFrame = Self.screenNotchFrame(screen)
 
-        // Both positions use the notch frame as anchor (no panel frame reading)
-        let xPosition: CGFloat
-        switch position {
-        case .center:
-            xPosition = notchFrame.midX - mascotWidth / 2
-        case .rightEdge:
-            // Right side of the medium notch bar (360pt wide, centered on notch)
-            xPosition = notchFrame.midX + 180 - mascotWidth + 5
-        }
-
-        // The notch bar's bottom edge in screen coordinates.
-        // The mascot hangs just below this edge, sliding in from behind.
+        // Position at right edge of the medium notch bar (360pt wide, centered)
+        let xPosition = notchFrame.midX + 180 - dangleWidth + 5
         let barBottom = notchFrame.minY
-        let visibleY = barBottom - mascotHeight + 8  // overlap 8pt so arms appear to grip the edge
-        let hiddenY = barBottom  // tucked behind the bar
+        let visibleY = barBottom - dangleHeight + 8
+        let hiddenY = barBottom
 
-        let targetY = visible ? visibleY : hiddenY
-        print("[PEEP] visible=\(visible) pos=\(position) notch=\(notchFrame) barBottom=\(barBottom) targetY=\(targetY) x=\(xPosition) windowLevel=\(window.level.rawValue)")
-
-        window.animator().alphaValue = visible ? 1.0 : 0.0
-        window.animator().setFrame(
-            NSRect(
-                x: xPosition,
-                y: targetY,
-                width: mascotWidth,
-                height: mascotHeight
-            ),
-            display: true
-        )
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.4
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.175, 0.885, 0.32, 1.1)
+            window.animator().alphaValue = visible ? 1.0 : 0.0
+            window.animator().setFrame(
+                NSRect(
+                    x: xPosition,
+                    y: visible ? visibleY : hiddenY,
+                    width: self.dangleWidth,
+                    height: self.dangleHeight
+                ),
+                display: true
+            )
+        }
     }
 
     // MARK: - Floating VNC Window
@@ -513,10 +579,12 @@ final class NotchOverlayController: NSObject {
         twinStateCancellable?.cancel()
         autoCollapseTask?.cancel()
         vncCancellable?.cancel()
+        danglingStageCancellable?.cancel()
         if let m = localClickMonitor { NSEvent.removeMonitor(m) }
         if let m = globalClickMonitor { NSEvent.removeMonitor(m) }
         if let m = hoverTrackingMonitor { NSEvent.removeMonitor(m) }
         peepingWindow?.close()
+        danglingWindow?.close()
         vncWindow?.close()
     }
 }

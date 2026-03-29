@@ -95,6 +95,7 @@ enum SSEEventType: String {
     case state
     case token
     case toolCall = "tool_call"
+    case toolProgress = "tool_progress"
     case toolResult = "tool_result"
     case error
     case ping

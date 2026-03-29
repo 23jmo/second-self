@@ -78,8 +78,8 @@ struct ChatView: View {
             } else {
                 UserMessageBubble(text: text, timestamp: message.timestamp)
             }
-        case .toolCall(let tool, let args, let result):
-            ToolCallPill(tool: tool, args: args, result: result)
+        case .toolCall(let tool, let args, let result, let progress):
+            ToolCallPill(tool: tool, args: args, result: result, progress: progress)
         case .component(let payload):
             A2UIRenderer(payload: payload, isStreaming: false, onAction: { actionId, context in
                 viewModel.sendComponentAction(actionId: actionId, context: context)

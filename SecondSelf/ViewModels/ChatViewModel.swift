@@ -216,6 +216,9 @@ final class ChatViewModel: ObservableObject {
         case .toolCall:
             handleToolCall(data: data)
 
+        case .toolProgress:
+            handleToolProgress(data: data)
+
         case .toolResult:
             handleToolResult(data: data)
 
@@ -412,10 +415,28 @@ final class ChatViewModel: ObservableObject {
         let toolMessage = ChatMessage(
             id: UUID(),
             sender: .twin,
-            content: .toolCall(tool: tool, args: argsStrings, result: nil),
+            content: .toolCall(tool: tool, args: argsStrings, result: nil, progress: nil),
             timestamp: Date()
         )
         messages.append(toolMessage)
+    }
+
+    private func handleToolProgress(data: String) {
+        guard let jsonData = data.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let message = json["message"] as? String else {
+            return
+        }
+
+        // Update the most recent in-progress tool call with progress text
+        if let lastToolIndex = messages.lastIndex(where: {
+            if case .toolCall(_, _, nil, _) = $0.content { return true }
+            return false
+        }) {
+            if case .toolCall(let tool, let args, _, _) = messages[lastToolIndex].content {
+                messages[lastToolIndex].content = .toolCall(tool: tool, args: args, result: nil, progress: message)
+            }
+        }
     }
 
     private func handleToolResult(data: String) {
@@ -444,11 +465,11 @@ final class ChatViewModel: ObservableObject {
 
         // Update the most recent tool call message with its result
         if let lastToolIndex = messages.lastIndex(where: {
-            if case .toolCall(_, _, nil) = $0.content { return true }
+            if case .toolCall(_, _, nil, _) = $0.content { return true }
             return false
         }) {
-            if case .toolCall(let tool, let args, _) = messages[lastToolIndex].content {
-                messages[lastToolIndex].content = .toolCall(tool: tool, args: args, result: displayResult)
+            if case .toolCall(let tool, let args, _, _) = messages[lastToolIndex].content {
+                messages[lastToolIndex].content = .toolCall(tool: tool, args: args, result: displayResult, progress: nil)
             }
         }
     }

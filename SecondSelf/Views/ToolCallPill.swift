@@ -8,6 +8,7 @@ struct ToolCallPill: View {
     let tool: String
     let args: [String: String]
     let result: String?
+    var progress: String? = nil
 
     @State private var isExpanded: Bool = false
 
@@ -36,6 +37,17 @@ struct ToolCallPill: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+
+                // Progress text shown while tool is running
+                if result == nil, let progress = progress {
+                    Text(progress)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.white.opacity(0.35))
+                        .lineLimit(1)
+                        .padding(.leading, 26)
+                        .transition(.opacity)
+                        .animation(.easeInOut(duration: 0.3), value: progress)
                 }
 
                 if isExpanded, let result = result {

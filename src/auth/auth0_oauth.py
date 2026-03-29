@@ -167,12 +167,22 @@ async def auth_native_callback(
     email = claims.get("email", "")
     name = claims.get("name", "")
     uid = claims.get("sub", "")
+
+    # Try multiple sources for the Google access token:
+    # 1. Custom claim from Auth0 Post-Login Action
+    # 2. The access_token from Auth0's token response (if using Google social connection)
     google_access_token = claims.get(f"{_CLAIM_NAMESPACE}/google_access_token", "")
 
     if not google_access_token:
+        # Auth0's access_token may be a Google token if using social connection passthrough
+        google_access_token = tokens.get("access_token", "")
+        if google_access_token:
+            log.info("Using Auth0 access_token as Google token (social connection passthrough)")
+
+    if not google_access_token:
         log.warning(
-            "No Google access token in id_token claims. "
-            "Ensure the Auth0 Post-Login Action is configured."
+            "No Google access token found in id_token claims or token response. "
+            "Google productivity tools will be unavailable."
         )
 
     # Create session (writes to .session_store.json)
@@ -185,6 +195,90 @@ async def auth_native_callback(
     log.info("Native auth session created for %s (session=%s)", email, session_id[:8])
 
     # Redirect to custom scheme — closes the ASWebAuthenticationSession
+    return RedirectResponse("secondself://auth-complete", status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Direct Google OAuth — bypasses Auth0, gets a real Google access token
+# ---------------------------------------------------------------------------
+
+_GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+_GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+_GOOGLE_REDIRECT_URI = "http://localhost:8000/auth/google-callback"
+_GOOGLE_SCOPES = " ".join([
+    "openid", "email", "profile",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+])
+
+_pending_google_auth: dict[str, str] = {}
+
+
+@router.get("/google-login")
+async def google_login():
+    """Direct Google OAuth — no Auth0. Gets a real Google access token."""
+    if not _GOOGLE_CLIENT_ID:
+        return JSONResponse({"error": "GOOGLE_CLIENT_ID not set in .env"}, status_code=500)
+
+    state = secrets.token_urlsafe(24)
+    _pending_google_auth[state] = "pending"
+
+    params = urlencode({
+        "client_id": _GOOGLE_CLIENT_ID,
+        "redirect_uri": _GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": _GOOGLE_SCOPES,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    })
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}", status_code=302)
+
+
+@router.get("/google-callback")
+async def google_callback(code: str = Query(...), state: str = Query("")):
+    """Exchange Google auth code for access token."""
+    if state not in _pending_google_auth:
+        return JSONResponse({"error": "Invalid state"}, status_code=400)
+    _pending_google_auth.pop(state, None)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": _GOOGLE_CLIENT_ID,
+            "client_secret": _GOOGLE_CLIENT_SECRET,
+            "redirect_uri": _GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        })
+
+    if resp.status_code != 200:
+        log.error("Google token exchange failed: %s", resp.text)
+        return JSONResponse({"error": "Token exchange failed"}, status_code=502)
+
+    tokens = resp.json()
+    access_token = tokens.get("access_token", "")
+
+    # Get user info from Google
+    async with httpx.AsyncClient() as client:
+        userinfo = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    user = userinfo.json() if userinfo.status_code == 200 else {}
+
+    email = user.get("email", "")
+    name = user.get("name", "")
+
+    session_id = create_session(
+        google_access_token=access_token,
+        email=email,
+        name=name,
+        uid=f"google|{user.get('id', '')}",
+    )
+    log.info("Direct Google auth session created for %s (token length=%d)", email, len(access_token))
+
     return RedirectResponse("secondself://auth-complete", status_code=302)
 
 

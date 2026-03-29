@@ -78,8 +78,12 @@ BROWSER_TOOLS = [
     {"name": "sync_cookies",
      "description": "Sync cookies from the user's Chrome browser into the agent browser. Call this ONLY after the user approves cookie sync via render_confirm_action. This transfers authenticated sessions (Google, GitHub, etc.) so the agent can browse logged-in sites.",
      "input_schema": {"type": "object", "properties": {
-         "profile": {"type": "string", "description": "Chrome profile to sync from (e.g. 'Profile 4'). Omit to auto-detect."},
+         "profile": {"type": "string", "description": "Chrome profile to sync from — accepts display name (e.g. 'Work') or directory name (e.g. 'Profile 4'). Omit to auto-detect last-used."},
+         "browser": {"type": "string", "description": "Browser name if ambiguous (e.g. 'Google Chrome', 'Arc'). Omit for Chrome."},
      }}},
+    {"name": "list_profiles",
+     "description": "List all available browser profiles the user can sync cookies from. Call this to show the user their options before syncing.",
+     "input_schema": {"type": "object", "properties": {}}},
 ]
 
 # Browser tool names that trigger the cookie sync prompt (navigation-related)
@@ -342,34 +346,67 @@ def call_tavily(query: str) -> dict:
 # Tool execution
 # ---------------------------------------------------------------------------
 
-def _get_chrome_profile_info() -> tuple[str, str]:
-    """Get the auto-detected Chrome profile name and display name for the prompt."""
+def _get_all_profile_info() -> list[dict]:
+    """Get all available browser profiles for the cookie sync prompt."""
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from cookie_sync.export import get_default_profile, get_chrome_profiles
-        default = get_default_profile()
-        profiles = get_chrome_profiles()
-        display_name = profiles.get(default, default)
-        return default, display_name
+        from cookie_sync.export import get_all_profiles, get_default_profile
+        profiles = get_all_profiles()
+        try:
+            default_dir = get_default_profile()
+        except Exception:
+            default_dir = None
+        return [
+            {
+                "browser": p.browser,
+                "directory": p.directory,
+                "display_name": p.display_name,
+                "last_used": p.browser == "Google Chrome" and p.directory == default_dir,
+            }
+            for p in profiles
+        ]
     except Exception:
-        return "Default", "Default"
+        return [{"browser": "Google Chrome", "directory": "Default", "display_name": "Default", "last_used": True}]
 
 
-async def _execute_cookie_sync(profile: str | None = None) -> dict:
-    """Run the full cookie export + CDP import pipeline."""
+async def _execute_cookie_sync(
+    profile: str | None = None,
+    browser: str | None = None,
+    on_progress=None,
+) -> dict:
+    """Run the full cookie export + CDP import pipeline.
+
+    Args:
+        on_progress: Optional async callback(message, percent) for progress updates.
+    """
     global _cookies_synced
+
+    async def _progress(msg: str, pct: float):
+        if on_progress:
+            await on_progress(msg, pct)
+        print(f"[orchestrator] Cookie sync: {msg}")
+
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from cookie_sync.export import export_cookies
+        from cookie_sync.export import export_cookies_async, resolve_profile
         from cookie_sync.import_cookies import import_cookies_sync
 
-        state = await asyncio.to_thread(export_cookies, profile)
+        profile_info = resolve_profile(profile, browser)
+        await _progress(
+            f"Copying {profile_info.display_name} profile...", 0.1
+        )
+
+        state = await export_cookies_async(profile=profile, browser=browser)
         cookie_count = len(state.get("cookies", []))
-        print(f"[orchestrator] Cookie sync: exported {cookie_count} cookies")
+        await _progress(
+            f"Exported {cookie_count} cookies, importing...", 0.7
+        )
 
         result = await asyncio.to_thread(import_cookies_sync)
         imported = result.get("imported", 0)
-        print(f"[orchestrator] Cookie sync: imported {imported} cookies")
+        await _progress(
+            f"Imported {imported} cookies", 1.0
+        )
 
         _cookies_synced = True
         return {
@@ -391,30 +428,48 @@ async def execute_tool_call(tool_name: str, arguments: dict) -> str:
     if tool_name.startswith("render_"):
         return json.dumps({"status": "rendered", "awaiting_user_action": True})
 
+    # List profiles tool
+    if tool_name == "list_profiles":
+        profiles = await asyncio.to_thread(_get_all_profile_info)
+        return json.dumps({"status": "ok", "profiles": profiles})
+
     # Cookie sync tool
     if tool_name == "sync_cookies":
         profile = arguments.get("profile")
-        result = await _execute_cookie_sync(profile)
+        browser = arguments.get("browser")
+        result = await _execute_cookie_sync(profile, browser)
         return json.dumps(result)
 
     # First browser navigation without cookies → hint Claude to ask the user
     if tool_name in BROWSER_NAV_TOOLS and not _cookies_synced and not _cookies_sync_offered:
         _cookies_sync_offered = True
-        profile_dir, profile_name = await asyncio.to_thread(_get_chrome_profile_info)
+        profiles = await asyncio.to_thread(_get_all_profile_info)
+        profile_list = ", ".join(
+            f"'{p['display_name']}' ({p['browser']}){' [last used]' if p.get('last_used') else ''}"
+            for p in profiles
+        )
         return json.dumps({
             "status": "no_cookies",
             "message": (
                 f"The browser has no authenticated sessions. "
-                f"Before proceeding, ask the user if they'd like to sync cookies "
-                f"from their Chrome profile '{profile_name}' ({profile_dir}) "
-                f"so you can browse logged-in sites. "
-                f"Use render_confirm_action to ask, then call sync_cookies if they approve. "
+                f"Ask the user which profile they'd like to sync cookies from. "
+                f"Available profiles: {profile_list}. "
+                f"Use render_confirm_action to ask, then call sync_cookies "
+                f"with the chosen profile name. "
                 f"After syncing (or if they decline), retry this browser_goto."
             ),
         })
 
     # Productivity tools (Gmail, Calendar, Docs, web search)
     if tool_name in PRODUCTIVITY_TOOL_NAMES:
+        # Try to refresh token if missing (user may have signed in after orchestrator started)
+        if not _google_access_token:
+            _try_reload_google_token()
+        if not _google_access_token:
+            return json.dumps({
+                "error": "google_auth_required",
+                "message": "You need to sign in with Google first. Ask the user to sign in via the notch UI, then retry.",
+            })
         return await execute_productivity_tool(
             tool_name, arguments, _google_access_token, TAVILY_API_KEY,
         )
@@ -428,6 +483,22 @@ async def execute_tool_call(tool_name: str, arguments: dict) -> str:
     if tool_name == "screenshot" and "image" in result:
         return json.dumps({"status": "ok", "description": "Screenshot captured. I can see the desktop."})
     return json.dumps(result)
+
+
+def _try_reload_google_token():
+    """Try to reload Google OAuth token from the auth server's session store."""
+    global _google_access_token, _user_uid, _user_name
+    try:
+        from src.auth.token_store import get_latest_session
+        result = get_latest_session()
+        if result:
+            _, token_data = result
+            _google_access_token = token_data.google_access_token
+            _user_uid = token_data.email
+            _user_name = token_data.name
+            print(f"[orchestrator] Google token reloaded for: {token_data.name}")
+    except Exception as e:
+        print(f"[orchestrator] Token reload failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +987,36 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15, source: str =
                 a2ui_payload = convert_to_a2ui(fn_name, fn_args)
                 yield ("component", {"a2ui": a2ui_payload})
                 result_str = json.dumps({"status": "rendered", "awaiting_user_action": True})
+            elif fn_name == "sync_cookies":
+                # Cookie sync is long-running (~20s) — stream progress events
+                yield ("tool_call", {"tool": fn_name, "args": fn_args, "step": step + 1})
+                progress_queue: asyncio.Queue = asyncio.Queue()
+
+                async def _on_sync_progress(msg: str, pct: float):
+                    await progress_queue.put((msg, pct))
+
+                sync_task = asyncio.create_task(
+                    _execute_cookie_sync(
+                        fn_args.get("profile"),
+                        fn_args.get("browser"),
+                        on_progress=_on_sync_progress,
+                    )
+                )
+                while not sync_task.done():
+                    try:
+                        msg, pct = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                        yield ("tool_progress", {
+                            "tool": fn_name, "message": msg, "progress": pct,
+                        })
+                    except asyncio.TimeoutError:
+                        continue
+                sync_result = sync_task.result()
+                result_str = json.dumps(sync_result)
+                try:
+                    result_data = json.loads(result_str)
+                except (json.JSONDecodeError, TypeError):
+                    result_data = {"result": result_str}
+                yield ("tool_result", {"tool": fn_name, "result": result_data, "step": step + 1})
             else:
                 yield ("tool_call", {"tool": fn_name, "args": fn_args, "step": step + 1})
                 result_str = await execute_tool_call(fn_name, fn_args)
@@ -1447,6 +1548,17 @@ async def suggestion_respond(request: Request):
             return {"status": "executing", "message": "On it!"}
 
     return {"status": "ok", "action": action}
+
+
+@app.post("/auth/refresh")
+async def auth_refresh():
+    """Reload Google OAuth token after user signs in via the notch UI."""
+    _try_reload_google_token()
+    return {
+        "status": "ok" if _google_access_token else "no_token",
+        "user": _user_name,
+        "has_google": _google_access_token is not None,
+    }
 
 
 @app.post("/reset")

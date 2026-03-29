@@ -271,8 +271,15 @@ export default function ChatView({
           <VncPip streamUrl={vncStreamUrl} />
         </div>
 
-        {/* Input */}
+        {/* Mascot + Input */}
         <div className="px-3 pb-3 pt-1">
+          <div className="flex justify-center -mb-1">
+            <img
+              src="/mascot.gif"
+              alt="Second Self mascot"
+              className="w-10 h-auto opacity-70"
+            />
+          </div>
           <MessageInput onSend={handleSend} disabled={isThinking} />
         </div>
       </motion.div>
