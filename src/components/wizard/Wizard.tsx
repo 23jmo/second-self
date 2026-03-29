@@ -19,8 +19,8 @@ export default function Wizard() {
   const { state, next, setUser, setSession, setProfile } = useWizardState();
 
   const screens = [
-    <WelcomeScreen key="welcome" onNext={next} />,
-    <NameInputScreen key="name" onSubmit={setUser} onSession={setSession} />,
+    <WelcomeScreen key="welcome" onNext={next} onSession={setSession} />,
+    <NameInputScreen key="name" onSubmit={setUser} />,
     <BuildingScreen
       key="building"
       name={state.name}
