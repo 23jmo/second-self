@@ -83,6 +83,8 @@ final class NotchOverlayController: NSObject {
         case 1:
             // Status mini → full chat: already expanded, just swap content
             chatViewModel.expansionStage = 2
+            // Make the panel key so the text field can receive keyboard focus
+            makeNotchPanelKey()
         default:
             // Full chat → compact
             collapse()
@@ -236,6 +238,14 @@ final class NotchOverlayController: NSObject {
                 height: menuBarHeight
             )
         }
+    }
+
+    // MARK: - Panel Focus
+
+    /// Makes the DynamicNotchKit panel the key window so text fields can receive focus.
+    private func makeNotchPanelKey() {
+        NSApp.activate(ignoringOtherApps: true)
+        dynamicNotch.windowController?.window?.makeKeyAndOrderFront(nil)
     }
 
     deinit {
