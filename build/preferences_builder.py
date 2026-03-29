@@ -41,6 +41,22 @@ _PROMPT = (
 _MAX_FIELD_LEN = 200
 _SANITIZE_RE = re.compile(r"[^\w\s\-.,;:@()/&'+]")
 
+# Must match relationship_mapper._classify_cluster threshold
+_INNER_CIRCLE_THRESHOLD = 0.7
+
+
+def _extract_inner_circle(relationships: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract inner-circle contacts from the relationships data.
+
+    relationships.json stores contacts as a flat list with closeness_score.
+    Inner circle = closeness_score > 0.7, matching relationship_mapper.py.
+    """
+    contacts = relationships.get("contacts", []) if isinstance(relationships, dict) else []
+    return [
+        c for c in contacts
+        if isinstance(c, dict) and c.get("closeness_score", 0) > _INNER_CIRCLE_THRESHOLD
+    ]
+
 
 def _sanitize(value: str) -> str:
     """Strip non-printable/control chars and truncate for prompt safety."""
@@ -158,9 +174,8 @@ def _build_text_block(data: dict[str, Any]) -> str:
                 topic_lines.append(f"  - {name} (source: {source}, confidence: {conf})")
             sections.append("\n".join(topic_lines))
 
-    # Inner circle contacts
-    relationships = data["relationships"]
-    inner_circle = relationships.get("inner_circle", []) if isinstance(relationships, dict) else []
+    # Inner circle contacts (closeness_score > 0.7)
+    inner_circle = _extract_inner_circle(data["relationships"])
     if inner_circle:
         rel_lines = ["INNER CIRCLE CONTACTS:"]
         for contact in inner_circle[:10]:
@@ -375,8 +390,8 @@ def build_preferences(
 
     prefs = {**_EMPTY_PREFERENCES, **_validate_prefs(raw_prefs)}
 
-    # Extract inner circle for the markdown
-    inner_circle = relationships.get("inner_circle", []) if isinstance(relationships, dict) else []
+    # Extract inner circle for the markdown (closeness_score > 0.7)
+    inner_circle = _extract_inner_circle(relationships)
 
     markdown = _build_markdown(prefs, inner_circle, calendar_count)
 

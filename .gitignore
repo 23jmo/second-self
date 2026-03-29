@@ -6,6 +6,13 @@ firebase-service-account.json
 output/
 !output/.gitkeep
 
+# Runtime state (contains OAuth tokens, user data, conversation history)
+.session_store.json
+.chat_history.json
+.profile_cache.json
+.rich_profile_cache.json
+.sdk_session_map.json
+
 # Memory
 .claude-memory.md
 

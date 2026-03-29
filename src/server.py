@@ -1,16 +1,14 @@
-"""FastAPI server — wires all connectors together.
+"""FastAPI server — wires the deep memory pipeline to the chat agent.
 
 Endpoints:
   GET  /health          — health check
   GET  /auth/login      — Firebase login page
   GET  /auth/callback   — OAuth callback
   GET  /auth/status     — check auth
-  POST /onboard         — run the full pipeline → SecondSelfProfile
+  POST /onboard         — run the full deep pipeline → rich profile
   POST /chat            — chat with the digital twin (tool use enabled)
 """
 
-import asyncio
-import json
 import logging
 import os
 import uuid
@@ -21,18 +19,26 @@ from fastapi import FastAPI, Cookie, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.auth.firebase_oauth import router as auth_router
-from src.auth.token_store import get_session, get_latest_session
-from src.connectors.tavily import search_user
-from src.connectors.gmail import get_sent_emails
-from src.connectors.calendar import get_calendar_events
-from src.synthesis.profile import build_second_self
+from src.auth.token_store import get_session, get_latest_session, get_uid_for_session
+from src.db.profile_repository import (
+    get_rich_profile,
+    get_slim_profile,
+    save_rich_profile,
+    save_slim_profile,
+)
+from src.synthesis.deep_profile import run_deep_onboard
 from src.agent.chat import handle_chat
 from src.models.schemas import (
+    Behavior,
     ChatRequest,
     ChatResponse,
+    Context,
+    Identity,
     OnboardRequest,
     OnboardResponse,
+    RichProfile,
     SecondSelfProfile,
+    Voice,
 )
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -40,48 +46,20 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 log = logging.getLogger("second-self")
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Second Self — MCP Connectors", version="0.1.0")
+app = FastAPI(title="Second Self — Deep Memory Pipeline", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(","),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 app.include_router(auth_router)
 
-# File-backed profile cache — survives server restarts (reload=True wipes memory)
-_PROFILE_CACHE_PATH = os.path.join(os.path.dirname(__file__), "..", ".profile_cache.json")
 
-
-def _load_profile_cache() -> dict[str, dict]:
-    try:
-        with open(_PROFILE_CACHE_PATH) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _save_profile_cache(cache: dict[str, dict]) -> None:
-    with open(_PROFILE_CACHE_PATH, "w") as f:
-        json.dump(cache, f)
-
-
-def _get_cached_profile(session_id: str) -> SecondSelfProfile | None:
-    cache = _load_profile_cache()
-    data = cache.get(session_id)
-    if not data:
-        return None
-    return SecondSelfProfile(**data)
-
-
-def _cache_profile(session_id: str, profile: SecondSelfProfile) -> None:
-    cache = _load_profile_cache()
-    cache[session_id] = profile.model_dump()
-    _save_profile_cache(cache)
-
+# --- Endpoints ---
 
 @app.get("/health")
 async def health():
@@ -90,18 +68,14 @@ async def health():
 
 @app.get("/session/latest")
 async def latest_session():
-    """Return the most recent authenticated session.
-
-    The notch app calls this on launch — if the user already logged in
-    via the browser, it picks up that session (which has Google tokens
-    for sending emails, creating events, etc.).
-    """
+    """Return the most recent authenticated session."""
     result = get_latest_session()
     if not result:
         return {"found": False}
 
     session_id, token_data = result
-    profile = _get_cached_profile(session_id)
+    uid = token_data.uid or get_uid_for_session(session_id)
+    profile = get_slim_profile(uid)
     return {
         "found": True,
         "session_id": session_id,
@@ -113,59 +87,55 @@ async def latest_session():
 
 @app.post("/onboard", response_model=OnboardResponse)
 async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
-    """Run the full onboarding pipeline.
+    """Run the full deep memory pipeline.
 
-    1. Fire Tavily immediately (fast cold-open)
-    2. Pull Gmail + Calendar in parallel (if authenticated)
-    3. Synthesize everything into a SecondSelfProfile
+    1. Tavily web search (always)
+    2. Gmail fetch + Calendar fetch (if Google authed)
+    3. Email cleaning + parallel analysis (voice, topics, behavior, relationships)
+    4. Event extraction → episodic memory
+    5. Build identity.md + preferences.md
+    6. Save profiles to Firestore
     """
-    # Prefer session_id from request body (notch app), fall back to cookie (browser)
     effective_session_id = body.session_id or session_id
-    sources_used: list[str] = []
 
-    # 1. Tavily — fire first, always available
-    tavily_task = asyncio.create_task(_safe_tavily(body.name, body.context))
-
-    # 2. Gmail + Calendar — only if we have Google tokens
-    emails = []
-    calendar_events = []
+    # Get Google access token if authed
     token_data = get_session(effective_session_id) if effective_session_id else None
+    access_token = token_data.google_access_token if token_data else None
 
-    if token_data:
-        access_token = token_data.google_access_token
-        gmail_task = asyncio.create_task(_safe_gmail(access_token))
-        calendar_task = asyncio.create_task(_safe_calendar(access_token))
+    # Run the deep pipeline
+    slim, rich, sources_used = await run_deep_onboard(
+        name=body.name,
+        email=body.email,
+        access_token=access_token,
+        tavily_context=body.context,
+    )
 
-        emails, calendar_events = await asyncio.gather(gmail_task, calendar_task)
-
-        if emails:
-            sources_used.append("gmail")
-        if calendar_events:
-            sources_used.append("calendar")
-    else:
-        log.info("No Google auth session — skipping Gmail and Calendar")
-
-    # Wait for Tavily
-    tavily_results = await tavily_task
-    if tavily_results:
-        sources_used.append("tavily")
-
-    # 3. Synthesize
+    # Fallback if nothing worked
     if not sources_used:
-        raise HTTPException(
-            status_code=400,
-            detail="No data sources available. Sign in with Google or provide a name for web search.",
+        log.info("No data sources returned results — using fallback profile")
+        slim = _fallback_profile(body.name)
+        rich = RichProfile(
+            identity=slim.identity,
+            voice=slim.voice,
+            behavior=slim.behavior,
+            context=slim.context,
         )
+        sources_used = ["fallback"]
 
-    profile = await build_second_self(emails, calendar_events, tavily_results)
-
-    # Cache the profile for chat — generate session_id if none exists
+    # Generate session if needed
     if not effective_session_id:
         effective_session_id = uuid.uuid4().hex
-    _cache_profile(effective_session_id, profile)
+
+    # Save profiles to Firestore (keyed by UID for cross-session persistence)
+    uid = get_uid_for_session(effective_session_id)
+    try:
+        save_slim_profile(uid, slim, sources_used)
+        save_rich_profile(uid, rich)
+    except Exception as exc:
+        log.warning("Firestore profile save failed: %s", exc)
 
     return OnboardResponse(
-        profile=profile,
+        profile=slim,
         sources_used=sources_used,
         session_id=effective_session_id,
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -174,14 +144,14 @@ async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest):
-    """Chat with the digital twin.
+    """Chat with the digital twin using the rich memory profile."""
+    uid = get_uid_for_session(body.session_id)
 
-    Requires a session_id from a previous onboard call.
-    Claude uses the cached profile to understand the user and can
-    execute actions (send emails, create events, etc.) via tool use.
-    """
-    profile = _get_cached_profile(body.session_id)
-    if not profile:
+    # Try rich profile first, fall back to slim
+    rich = get_rich_profile(uid)
+    slim = get_slim_profile(uid)
+
+    if not rich and not slim:
         raise HTTPException(
             status_code=400,
             detail="No profile found. Run /onboard first.",
@@ -190,12 +160,17 @@ async def chat(body: ChatRequest):
     token_data = get_session(body.session_id)
     access_token = token_data.google_access_token if token_data else None
 
-    response_text, actions_taken = await handle_chat(
-        message=body.message,
-        profile=profile,
-        session_id=body.session_id,
-        access_token=access_token,
-    )
+    try:
+        response_text, actions_taken = await handle_chat(
+            message=body.message,
+            profile=rich or slim,
+            session_id=body.session_id,
+            uid=uid,
+            access_token=access_token,
+        )
+    except Exception as e:
+        log.exception("Chat handler failed")
+        raise HTTPException(status_code=500, detail="Chat unavailable — please try again.")
 
     return ChatResponse(
         response=response_text,
@@ -203,31 +178,30 @@ async def chat(body: ChatRequest):
     )
 
 
-async def _safe_tavily(name: str, context: str) -> str:
-    """Run Tavily search with graceful error handling."""
-    try:
-        return await search_user(name, context)
-    except Exception as e:
-        log.warning(f"Tavily search failed: {e}")
-        return ""
-
-
-async def _safe_gmail(access_token: str) -> list:
-    """Run Gmail fetch with graceful error handling."""
-    try:
-        return await get_sent_emails(access_token)
-    except Exception as e:
-        log.warning(f"Gmail fetch failed: {e}")
-        return []
-
-
-async def _safe_calendar(access_token: str) -> list:
-    """Run Calendar fetch with graceful error handling."""
-    try:
-        return await get_calendar_events(access_token)
-    except Exception as e:
-        log.warning(f"Calendar fetch failed: {e}")
-        return []
+def _fallback_profile(name: str) -> SecondSelfProfile:
+    """Minimal profile when no data sources are available (demo mode)."""
+    return SecondSelfProfile(
+        identity=Identity(name=name, role="unknown", company="unknown"),
+        voice=Voice(
+            formality="casual-professional",
+            avg_email_length="medium",
+            signature_phrases=[],
+            opens_with="Hey",
+            closes_with="Best",
+            tone="friendly",
+        ),
+        behavior=Behavior(
+            work_hours="9am-5pm",
+            meeting_load="medium",
+            response_style="concise",
+            peak_focus_time="morning",
+        ),
+        context=Context(
+            active_projects=[],
+            top_collaborators=[],
+            current_priorities=[],
+        ),
+    )
 
 
 if __name__ == "__main__":

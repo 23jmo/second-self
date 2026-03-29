@@ -174,12 +174,18 @@ def test_build_preferences_with_llm(tmp_path: Path) -> None:
          patch("build.preferences_builder._call_claude", return_value=_SAMPLE_PREFS):
         md = pb.build_preferences(
             behavior={"active_hours": [10], "active_days": ["Monday"]},
-            relationships={"inner_circle": [{"email": "a@b.com", "address_style": "Hi"}]},
+            relationships={
+                "contacts": [
+                    {"email": "a@b.com", "address_style": "Hi", "closeness_score": 0.85},
+                ],
+                "clusters": {"inner_circle": 1, "colleagues": 0, "acquaintances": 0},
+            },
             calendar_events=[{"summary": "Standup", "is_recurring": True}],
             topics=[{"name": "AI", "source": "both", "confidence": "high"}],
         )
     assert "# Preferences" in md
     assert "10am-12pm" in md
+    assert "a@b.com" in md  # inner circle contact should appear
     assert out_path.exists()
     assert secondself_path.exists()
 
@@ -222,3 +228,53 @@ def test_build_preferences_loads_from_files(tmp_path: Path) -> None:
          patch("build.preferences_builder._call_claude", return_value=_SAMPLE_PREFS):
         md = pb.build_preferences()
     assert "# Preferences" in md
+
+
+# ---------------------------------------------------------------------------
+# _extract_inner_circle
+# ---------------------------------------------------------------------------
+
+def test_extract_inner_circle_from_contacts() -> None:
+    """Should filter contacts by closeness_score > 0.7."""
+    relationships = {
+        "contacts": [
+            {"email": "inner@example.com", "closeness_score": 0.85, "address_style": "Hey"},
+            {"email": "colleague@example.com", "closeness_score": 0.5, "address_style": "Hi"},
+            {"email": "acquaint@example.com", "closeness_score": 0.2, "address_style": "Dear"},
+        ],
+        "clusters": {"inner_circle": 1, "colleagues": 1, "acquaintances": 1},
+    }
+    result = pb._extract_inner_circle(relationships)
+    assert len(result) == 1
+    assert result[0]["email"] == "inner@example.com"
+
+
+def test_extract_inner_circle_empty_contacts() -> None:
+    assert pb._extract_inner_circle({}) == []
+    assert pb._extract_inner_circle({"contacts": []}) == []
+
+
+def test_extract_inner_circle_boundary() -> None:
+    """Exactly 0.7 should NOT be included (must be > 0.7)."""
+    relationships = {
+        "contacts": [{"email": "edge@example.com", "closeness_score": 0.7}],
+    }
+    assert pb._extract_inner_circle(relationships) == []
+
+
+def test_build_text_block_with_inner_circle() -> None:
+    """Inner circle contacts should appear in the LLM text block."""
+    data = {
+        "behavior": {},
+        "relationships": {
+            "contacts": [
+                {"email": "friend@example.com", "closeness_score": 0.9, "address_style": "Hey buddy"},
+            ],
+        },
+        "calendar_events": [],
+        "calendar_count": 0,
+        "topics": [],
+    }
+    result = pb._build_text_block(data)
+    assert "INNER CIRCLE CONTACTS" in result
+    assert "friend@example.com" in result

@@ -81,6 +81,7 @@ def test_parse_event_normal() -> None:
     assert result["summary"] == "Meeting"
     assert result["attendees"] == ["me@example.com", "bob@example.com"]
     assert result["is_recurring"] is False
+    assert result["status"] == "accepted"
 
 
 def test_parse_event_declined() -> None:
@@ -119,6 +120,40 @@ def test_parse_event_recurring() -> None:
     result = cf._parse_event(event, "me@example.com")
     assert result is not None
     assert result["is_recurring"] is True
+
+
+def test_parse_event_tentative_status() -> None:
+    """Tentative events should NOT be filtered out, and status should be captured."""
+    event = _make_event(
+        attendees=[
+            {"email": "me@example.com", "responseStatus": "tentative"},
+            {"email": "bob@example.com", "responseStatus": "accepted"},
+        ]
+    )
+    result = cf._parse_event(event, "me@example.com")
+    assert result is not None
+    assert result["status"] == "tentative"
+
+
+def test_parse_event_no_attendees_default_status() -> None:
+    """Events with no attendees should default to 'accepted' status."""
+    event = _make_event()
+    result = cf._parse_event(event, "me@example.com")
+    assert result is not None
+    assert result["status"] == "accepted"
+
+
+def test_parse_event_needs_action_status() -> None:
+    """needsAction status should pass through (not filtered)."""
+    event = _make_event(
+        attendees=[
+            {"email": "me@example.com", "responseStatus": "needsAction"},
+            {"email": "bob@example.com", "responseStatus": "accepted"},
+        ]
+    )
+    result = cf._parse_event(event, "me@example.com")
+    assert result is not None
+    assert result["status"] == "needsAction"
 
 
 def test_parse_event_no_attendees_not_all_day() -> None:
