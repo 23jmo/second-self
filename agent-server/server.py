@@ -13,6 +13,10 @@ import io
 import time
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+
+# Allow importing cookie_sync from the project root
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 PORT = 8421
 
@@ -147,6 +151,32 @@ TOOLS = {
 }
 
 
+def sync_cookies(body: dict) -> dict:
+    """Import cookies from storage_state.json into Chrome via CDP."""
+    try:
+        from cookie_sync.import_cookies import import_cookies_sync
+    except ImportError as e:
+        return {"status": "error", "error": f"cookie_sync not available: {e}"}
+
+    domains = body.get("domains")  # optional list of domain strings
+    clear = body.get("clear", True)
+    state_path = body.get("path", str(Path.home() / ".secondself" / "storage_state.json"))
+
+    try:
+        result = import_cookies_sync(
+            storage_state_path=state_path,
+            domains=domains,
+            clear_existing=clear,
+        )
+        return result
+    except FileNotFoundError as e:
+        return {"status": "error", "error": str(e)}
+    except ConnectionError as e:
+        return {"status": "error", "error": f"CDP connection failed: {e}"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
@@ -212,16 +242,26 @@ class AgentHandler(BaseHTTPRequestHandler):
         self.wfile.write(html.encode())
 
     def do_POST(self):
-        handler = TOOLS.get(self.path)
-        if not handler:
-            self._respond(404, {"error": f"unknown tool: {self.path}"})
-            return
-
         content_length = int(self.headers.get("Content-Length", 0))
         body = {}
         if content_length > 0:
             raw = self.rfile.read(content_length)
             body = json.loads(raw)
+
+        # Cookie sync endpoint (outside TOOLS — heavier handler)
+        if self.path == "/browser/sync-cookies":
+            try:
+                result = sync_cookies(body)
+                code = 200 if result.get("status") == "ok" else 500
+                self._respond(code, result)
+            except Exception as e:
+                self._respond(500, {"status": "error", "error": str(e)})
+            return
+
+        handler = TOOLS.get(self.path)
+        if not handler:
+            self._respond(404, {"error": f"unknown tool: {self.path}"})
+            return
 
         try:
             result = handler(body)

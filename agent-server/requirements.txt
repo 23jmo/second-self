@@ -2,3 +2,4 @@ pyautogui>=0.9.54
 Pillow>=10.0.0
 pyobjc-framework-Quartz>=10.0
 browser-use[cli]>=0.1.0
+cryptography>=41.0.0
