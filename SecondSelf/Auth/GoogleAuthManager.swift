@@ -4,10 +4,10 @@ import AppKit
 
 // MARK: - Google Auth Manager
 
-/// Handles Google OAuth via ASWebAuthenticationSession.
-/// Opens the local FastAPI login page (localhost:8000/auth/login) which uses
-/// Firebase JS SDK for Google sign-in. After auth, polls for the session
-/// in .session_store.json.
+/// Handles Auth0-based Google OAuth via ASWebAuthenticationSession.
+/// Opens the local FastAPI endpoint (localhost:8000/auth/login) which redirects
+/// to Auth0's /authorize endpoint for Google sign-in. After auth, polls for
+/// the session in .session_store.json.
 final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
     @Published var isAuthenticated: Bool = false
     @Published var isAuthenticating: Bool = false
@@ -62,7 +62,7 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
         isAuthenticating = true
         errorMessage = nil
 
-        // The FastAPI server at :8000 serves the Firebase login page
+        // The FastAPI server at :8000 redirects to Auth0 for Google sign-in
         guard let authURL = URL(string: "http://localhost:8000/auth/login") else {
             errorMessage = "Invalid auth URL"
             isAuthenticating = false
@@ -90,8 +90,8 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
             isAuthenticating = false
         }
 
-        // Also start polling — the Firebase login page POSTs tokens to the backend
-        // which saves to .session_store.json. We detect that file change.
+        // Also start polling — Auth0 redirects back to the backend which
+        // saves tokens to .session_store.json. We detect that file change.
         startPollingForSession()
     }
 

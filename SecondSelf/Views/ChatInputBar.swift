@@ -154,9 +154,13 @@ struct ChatInputBar: View {
     private func sendIfValid() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty && isEnabled else { return }
-        isFocused = false
-        text = ""
         onSend(trimmed)
+        // Clear after send — onSend already sets viewModel.inputText = ""
+        // but force it here too in case the binding lags
+        DispatchQueue.main.async {
+            text = ""
+            isFocused = true
+        }
     }
 }
 

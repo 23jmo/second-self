@@ -1,5 +1,15 @@
-"""Google Identity Services (GIS) web-based OAuth flow.
+"""DEPRECATED: Google Identity Services (GIS) web-based OAuth flow.
 
+Both the web app and native macOS app now authenticate via Auth0.
+See ``src/auth/auth0_oauth.py`` for the active implementation.
+
+This module is kept for the standalone CLI pipeline (main.py) which may
+still call ``run_auth_server()`` directly. It should be migrated to Auth0
+and removed in a future cleanup.
+
+---
+
+Original description:
 Serves a login page that uses the GIS JS library to sign in with Google,
 captures the Google access token via a POST callback, verifies required scopes,
 persists the token to disk, and shuts down. The pipeline then uses the access

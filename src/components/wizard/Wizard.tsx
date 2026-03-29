@@ -16,11 +16,11 @@ const fadeVariants = {
 };
 
 export default function Wizard() {
-  const { state, next, setUser, setSession, setProfile } = useWizardState();
+  const { state, next, back, setUser, setSession, setProfile } = useWizardState();
 
   const screens = [
     <WelcomeScreen key="welcome" onNext={next} onSession={setSession} />,
-    <NameInputScreen key="name" onSubmit={setUser} />,
+    <NameInputScreen key="name" onSubmit={setUser} onBack={back} />,
     <BuildingScreen
       key="building"
       name={state.name}
@@ -30,8 +30,8 @@ export default function Wizard() {
       onComplete={next}
       onProfile={setProfile}
     />,
-    <ProfileScreen key="profile" name={state.name} role={state.role} profile={state.profile} onNext={next} />,
-    <CompleteScreen key="complete" name={state.name} onNext={next} />,
+    <ProfileScreen key="profile" name={state.name} role={state.role} profile={state.profile} onNext={next} onBack={back} />,
+    <CompleteScreen key="complete" name={state.name} onNext={next} onBack={back} />,
     <ChatScreen key="chat" sessionId={state.sessionId} name={state.name} />,
   ];
 

@@ -15,129 +15,19 @@
       justify-content: center;
       min-height: 100vh;
     }
-    .container {
-      text-align: center;
-      max-width: 400px;
-      padding: 2rem;
-    }
+    .container { text-align: center; max-width: 400px; padding: 2rem; }
     h1 { font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
-    p { color: #888; margin-bottom: 2rem; }
-    #signin-btn {
-      background: #4285f4;
-      color: white;
-      border: none;
-      padding: 12px 32px;
-      font-size: 1rem;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    #signin-btn:hover { background: #3367d6; }
-    #signin-btn:disabled { background: #555; cursor: not-allowed; }
-    #status { margin-top: 1.5rem; color: #888; min-height: 1.5rem; }
-    .error { color: #e74c3c; }
-    .success { color: #2ecc71; }
+    p { color: #888; margin-top: 1rem; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Second Self</h1>
-    <p>Sign in with Google to build your digital twin.</p>
-    <button id="signin-btn" disabled>Loading...</button>
-    <div id="status"></div>
+    <p>Redirecting to sign in...</p>
+    <p style="margin-top: 2rem; font-size: 0.85rem;">
+      If you are not redirected automatically,
+      <a href="/auth/login" style="color: #4285f4;">click here</a>.
+    </p>
   </div>
-
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script>
-    let tokenClient = null;
-
-    async function init() {
-      const btn = document.getElementById("signin-btn");
-      const status = document.getElementById("status");
-
-      // Fetch the client ID from the server
-      const configResp = await fetch("/auth/oauth-config");
-      const config = await configResp.json();
-
-      if (!config.clientId) {
-        status.textContent = "Error: GOOGLE_CLIENT_ID not configured on server.";
-        status.className = "error";
-        return;
-      }
-
-      // Wait for GIS library to load
-      await new Promise((resolve) => {
-        if (window.google && google.accounts) {
-          resolve();
-        } else {
-          const script = document.querySelector('script[src*="gsi/client"]');
-          script.addEventListener("load", resolve);
-        }
-      });
-
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: config.clientId,
-        scope: [
-          "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/calendar.readonly",
-          "https://www.googleapis.com/auth/userinfo.email",
-          "https://www.googleapis.com/auth/userinfo.profile",
-        ].join(" "),
-        callback: handleTokenResponse,
-      });
-
-      btn.textContent = "Sign in with Google";
-      btn.disabled = false;
-      btn.onclick = () => tokenClient.requestAccessToken();
-    }
-
-    async function handleTokenResponse(tokenResponse) {
-      const btn = document.getElementById("signin-btn");
-      const status = document.getElementById("status");
-
-      if (tokenResponse.error) {
-        status.textContent = "Sign-in failed: " + tokenResponse.error;
-        status.className = "error";
-        return;
-      }
-
-      btn.disabled = true;
-      status.textContent = "Signed in! Fetching profile...";
-
-      try {
-        // Get user info from Google
-        const userResp = await fetch(
-          "https://www.googleapis.com/oauth2/v2/userinfo",
-          { headers: { Authorization: "Bearer " + tokenResponse.access_token } }
-        );
-        const userInfo = await userResp.json();
-
-        status.textContent = "Sending tokens to server...";
-
-        const resp = await fetch("/auth/callback", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            google_access_token: tokenResponse.access_token,
-            email: userInfo.email || "",
-            display_name: userInfo.name || userInfo.email || "",
-          }),
-        });
-
-        if (!resp.ok) throw new Error(await resp.text());
-
-        const name = userInfo.name || userInfo.email;
-        status.textContent = "Authenticated as " + name + ". You can close this window.";
-        status.className = "success";
-      } catch (err) {
-        console.error("Sign-in error detail:", err);
-        status.textContent = "Sign-in failed. Please try again.";
-        status.className = "error";
-        btn.disabled = false;
-      }
-    }
-
-    init();
-  </script>
 </body>
 </html>

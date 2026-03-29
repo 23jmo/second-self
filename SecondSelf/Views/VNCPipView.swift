@@ -8,6 +8,7 @@ import AppKit
 /// Native MJPEG parser using URLSession (no WKWebView, no ATS issues).
 struct VNCPipView: View {
     let twinState: TwinState
+    var onTakeControl: (() -> Void)?
 
     @StateObject private var streamer = MJPEGStreamer()
     @State private var isHovered: Bool = false
@@ -38,12 +39,12 @@ struct VNCPipView: View {
                         )
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity)
                 .clipped()
 
                 // Take Control overlay on hover
                 if isHovered {
-                    Button(action: { launchTigerVNC() }) {
+                    Button(action: { launchTigerVNC(); onTakeControl?() }) {
                         Text("Take Control")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundColor(.white)
@@ -64,12 +65,8 @@ struct VNCPipView: View {
                 }
             }
         }
-        .background(Color(hex: 0x1A1A1D))
+        .background(Color.ssNotchBlack)
         .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-        )
         .animation(.ssMicro, value: isHovered)
         .onHover { hovering in isHovered = hovering }
         .onAppear {
@@ -119,7 +116,7 @@ struct VNCPipView: View {
             .padding(.trailing, 8)
         }
         .frame(height: 18)
-        .background(Color(hex: 0x1A1A1D))
+        .background(Color.ssNotchBlack)
     }
 
     private func launchTigerVNC() {

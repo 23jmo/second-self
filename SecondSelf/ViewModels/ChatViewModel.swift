@@ -128,10 +128,20 @@ final class ChatViewModel: ObservableObject {
         userDismissedVNC = true
     }
 
+    func toggleVNCFeed() {
+        if showVNCFeed {
+            dismissVNCFeed()
+        } else {
+            showVNCFeed = true
+            userDismissedVNC = false
+        }
+    }
+
     // MARK: - Send Message
 
     func sendMessage(text: String) {
         guard !text.isEmpty else { return }
+        inputText = ""
 
         // Ensure /events stream is connected now that orchestrator is running
         startEventsStream()

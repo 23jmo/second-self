@@ -30,6 +30,10 @@ final class NotchOverlayController: NSObject {
     private var peepingVisible = false
     private var hoverTrackingMonitor: Any?
 
+    // Floating VNC window below the notch panel
+    private var vncWindow: NSWindow?
+    private var vncCancellable: AnyCancellable?
+
     private(set) var authManager: GoogleAuthManager
 
     init(authManager: GoogleAuthManager) {
@@ -76,6 +80,7 @@ final class NotchOverlayController: NSObject {
         installGlobalClickMonitor()
         setupPeepingWindow()
         installHoverTracking()
+        setupVNCWindow(viewModel: viewModel)
     }
 
     // MARK: - 3-Stage Toggle
@@ -106,6 +111,9 @@ final class NotchOverlayController: NSObject {
     func collapse() {
         // Cancel any active voice recording before collapsing
         chatViewModel.cancelVoiceRecording()
+
+        // Hide floating VNC window when collapsing
+        setVNCWindowVisible(false)
 
         // Staged collapse: content fades first (200ms), then notch shape compacts
         chatViewModel.expansionStage = 0
@@ -234,7 +242,7 @@ final class NotchOverlayController: NSObject {
         guard let screen = NSScreen.main else { return .zero }
         let notch = Self.screenNotchFrame(screen)
         let expandedWidth: CGFloat = 420
-        let expandedHeight: CGFloat = chatViewModel.showVNCFeed ? 720 : 520
+        let expandedHeight: CGFloat = 520
 
         return NSRect(
             x: notch.midX - expandedWidth / 2,
@@ -391,12 +399,136 @@ final class NotchOverlayController: NSObject {
         // (DynamicNotchKit doesn't expose a direct resize API, so we skip this for now)
     }
 
+    // MARK: - Floating VNC Window
+
+    private let vncWidth: CGFloat = 420
+    private let vncHeight: CGFloat = 280
+
+    /// Read the actual bottom edge of the DynamicNotchKit panel window.
+    private func notchPanelBottomY() -> CGFloat {
+        if let panelWindow = dynamicNotch.windowController?.window {
+            return panelWindow.frame.minY
+        }
+        // Fallback: estimate from screen geometry
+        guard let screen = NSScreen.main else { return 0 }
+        return screen.frame.maxY - screen.safeAreaInsets.top - 560
+    }
+
+    private func setupVNCWindow(viewModel: ChatViewModel) {
+        guard let screen = NSScreen.main else { return }
+
+        // Start hidden behind the panel
+        let panelBottom = notchPanelBottomY()
+        let windowFrame = NSRect(
+            x: screen.frame.midX - vncWidth / 2,
+            y: panelBottom,
+            width: vncWidth,
+            height: vncHeight
+        )
+
+        let window = NSWindow(
+            contentRect: windowFrame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.level = .statusBar + 1
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+        let hostingView = NSHostingView(
+            rootView: FloatingVNCContent(chatViewModel: viewModel) { [weak self] in
+                self?.chatViewModel.dismissVNCFeed()
+                self?.collapse()
+            }
+            .frame(width: vncWidth, height: vncHeight)
+        )
+        window.contentView = hostingView
+        window.alphaValue = 0
+        window.orderFront(nil)
+        vncWindow = window
+
+        // Show/hide when showVNCFeed changes (only when chat panel is open)
+        vncCancellable = viewModel.$showVNCFeed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] showVNC in
+                guard let self else { return }
+                let shouldShow = showVNC && self.chatViewModel.expansionStage >= 2
+                self.setVNCWindowVisible(shouldShow)
+            }
+    }
+
+    private func setVNCWindowVisible(_ visible: Bool) {
+        guard let window = vncWindow, let screen = NSScreen.main else { return }
+
+        // Read the live panel bottom edge every time
+        let panelBottom = notchPanelBottomY()
+        let visibleY = panelBottom - vncHeight
+        let hiddenY = panelBottom
+
+        let targetFrame = NSRect(
+            x: screen.frame.midX - vncWidth / 2,
+            y: visible ? visibleY : hiddenY,
+            width: vncWidth,
+            height: vncHeight
+        )
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.175, 0.885, 0.32, 1.1)
+            window.animator().setFrame(targetFrame, display: true)
+            window.animator().alphaValue = visible ? 1.0 : 0.0
+        }
+    }
+
     deinit {
         twinStateCancellable?.cancel()
         autoCollapseTask?.cancel()
+        vncCancellable?.cancel()
         if let m = localClickMonitor { NSEvent.removeMonitor(m) }
         if let m = globalClickMonitor { NSEvent.removeMonitor(m) }
         if let m = hoverTrackingMonitor { NSEvent.removeMonitor(m) }
         peepingWindow?.close()
+        vncWindow?.close()
+    }
+}
+
+// MARK: - Floating VNC Content
+
+/// SwiftUI content for the floating VNC window below the notch panel.
+struct FloatingVNCContent: View {
+    @ObservedObject var chatViewModel: ChatViewModel
+    var onTakeControl: (() -> Void)?
+
+    var body: some View {
+        ZStack {
+            if chatViewModel.showVNCFeed {
+                VNCPipView(twinState: chatViewModel.twinState, onTakeControl: onTakeControl)
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 6)
+            }
+
+            // Dismiss button — top right
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: { chatViewModel.dismissVNCFeed() }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(5)
+                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(10)
+                }
+                Spacer()
+            }
+        }
+        .background(Color.ssNotchBlack)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 12, bottomTrailingRadius: 12, topTrailingRadius: 0))
+        .environment(\.colorScheme, .dark)
     }
 }

@@ -5,14 +5,16 @@ import { AnimatePresence, motion } from "motion/react";
 import MascotFace from "@/components/mascot/MascotFace";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import ArrowIcon from "@/components/ui/ArrowIcon";
 
 interface NameInputScreenProps {
   onSubmit: (name: string, role: string) => void;
+  onBack?: () => void;
 }
 
 type FocusedField = "name" | "role" | null;
 
-export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
+export default function NameInputScreen({ onSubmit, onBack }: NameInputScreenProps) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [focused, setFocused] = useState<FocusedField>(null);
@@ -47,7 +49,16 @@ export default function NameInputScreen({ onSubmit }: NameInputScreenProps) {
   }
 
   return (
-    <div className="flex flex-col items-center w-full max-w-[615px] px-4" onKeyDown={handleKeyDown}>
+    <div className="relative flex flex-col items-center w-full max-w-[615px] px-4" onKeyDown={handleKeyDown}>
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="absolute top-0 left-4 flex items-center gap-1 text-sm text-black/40 hover:text-black/60 transition-colors"
+        >
+          <ArrowIcon className="w-4 h-4 rotate-180" />
+          back
+        </button>
+      )}
       {/* Name tag above mascot */}
       <div className="h-10 sm:h-12 flex items-end justify-center">
         <AnimatePresence>

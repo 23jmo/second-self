@@ -21,7 +21,16 @@ struct UserMessageBubble: View {
                     .padding(.vertical, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 15)
-                            .fill(Color.ssUserOlive)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.ssUserOlive.opacity(0.85),
+                                        Color.ssUserOlive
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
                     )
 
                 // Tail on the right

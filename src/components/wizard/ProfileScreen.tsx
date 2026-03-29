@@ -1,6 +1,7 @@
 import MascotFace from "@/components/mascot/MascotFace";
 import Button from "@/components/ui/Button";
 import Pill from "@/components/ui/Pill";
+import ArrowIcon from "@/components/ui/ArrowIcon";
 import type { SecondSelfProfile } from "@/lib/api";
 
 interface ProfileScreenProps {
@@ -8,9 +9,10 @@ interface ProfileScreenProps {
   role: string;
   profile: SecondSelfProfile | null;
   onNext: () => void;
+  onBack?: () => void;
 }
 
-export default function ProfileScreen({ name, role, profile, onNext }: ProfileScreenProps) {
+export default function ProfileScreen({ name, role, profile, onNext, onBack }: ProfileScreenProps) {
   const isKnown = (v: string | undefined) => v && v.toLowerCase() !== "unknown";
 
   // Identity
@@ -34,7 +36,16 @@ export default function ProfileScreen({ name, role, profile, onNext }: ProfileSc
   const workHours = profile?.behavior?.work_hours;
 
   return (
-    <div className="flex flex-col items-center gap-6 w-full max-w-[681px] px-4">
+    <div className="relative flex flex-col items-center gap-6 w-full max-w-[681px] px-4">
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="absolute top-0 left-4 flex items-center gap-1 text-sm text-black/40 hover:text-black/60 transition-colors"
+        >
+          <ArrowIcon className="w-4 h-4 rotate-180" />
+          back
+        </button>
+      )}
       <MascotFace className="w-36 sm:w-44 md:w-52" />
 
       <div className="flex flex-col items-center gap-7 w-full">

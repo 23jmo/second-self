@@ -12,6 +12,7 @@ export interface WizardState {
 
 type WizardAction =
   | { type: "NEXT" }
+  | { type: "BACK" }
   | { type: "SET_USER"; name: string; role: string }
   | { type: "SET_SESSION"; sessionId: string; email: string }
   | { type: "SET_PROFILE"; profile: SecondSelfProfile }
@@ -30,6 +31,8 @@ function wizardReducer(state: WizardState, action: WizardAction): WizardState {
   switch (action.type) {
     case "NEXT":
       return { ...state, step: Math.min(state.step + 1, 5) };
+    case "BACK":
+      return { ...state, step: Math.max(state.step - 1, 0) };
     case "SET_USER":
       return { ...state, step: 2, name: action.name, role: action.role };
     case "SET_SESSION":
@@ -47,6 +50,7 @@ export function useWizardState() {
   const [state, dispatch] = useReducer(wizardReducer, initialState);
 
   const next = () => dispatch({ type: "NEXT" });
+  const back = () => dispatch({ type: "BACK" });
   const setUser = (name: string, role: string) =>
     dispatch({ type: "SET_USER", name, role });
   const setSession = (sessionId: string, email: string) =>
@@ -55,5 +59,5 @@ export function useWizardState() {
     dispatch({ type: "SET_PROFILE", profile });
   const reset = () => dispatch({ type: "RESET" });
 
-  return { state, next, setUser, setSession, setProfile, reset };
+  return { state, next, back, setUser, setSession, setProfile, reset };
 }

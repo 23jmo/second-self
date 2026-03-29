@@ -25,7 +25,16 @@ struct TwinMessageBubble: View {
                     .padding(.vertical, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 15)
-                            .fill(Color.ssTwinOlive)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.ssTwinOlive.opacity(0.85),
+                                        Color.ssTwinOlive
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
                     )
 
                 Spacer(minLength: 60)

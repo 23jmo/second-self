@@ -187,46 +187,21 @@ struct ExpandedNotchContent: View {
             // Chat messages (no header, chat starts immediately)
             ChatView(viewModel: chatViewModel)
 
-            // VNC PiP: shows on computer-use tool calls, fills remaining space
-            if chatViewModel.showVNCFeed {
-                ZStack {
-                    VNCPipView(twinState: chatViewModel.twinState)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                    // Dismiss button — top right
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Button(action: { chatViewModel.dismissVNCFeed() }) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.7))
-                                    .padding(5)
-                                    .background(Circle().fill(Color.black.opacity(0.5)))
-                            }
-                            .buttonStyle(.plain)
-                            .padding(6)
-                        }
-                        Spacer()
-                    }
-
-                    // Twin character — bottom right
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            TwinCharacterView(twinState: chatViewModel.twinState)
-                                .frame(width: 72, height: 99)
-                                .offset(x: 4, y: 10)
-                        }
-                    }
+            // VNC toggle + Input bar
+            HStack(spacing: 6) {
+                Button(action: { chatViewModel.toggleVNCFeed() }) {
+                    Image(systemName: chatViewModel.showVNCFeed ? "desktopcomputer.trianglebadge.exclamationmark" : "desktopcomputer")
+                        .font(.system(size: 12))
+                        .foregroundColor(chatViewModel.showVNCFeed ? Color.ssTwinGreen : Color.ssTextSecondary.opacity(0.5))
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 4)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
+                .buttonStyle(.plain)
+                .help("Toggle Twin's Desktop")
 
-            // Input bar
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+
             ChatInputBar(
                 text: $chatViewModel.inputText,
                 isEnabled: chatViewModel.twinState != .thinking && chatViewModel.twinState != .working,
@@ -242,42 +217,36 @@ struct ExpandedNotchContent: View {
             .padding(.bottom, 12)
             .onAppear { chatViewModel.checkMicPermission() }
         }
-        .frame(width: 420, height: chatViewModel.showVNCFeed ? 760 : 560)
+        .frame(width: 420, height: 560)
         .background(Color.ssNotchBlack)
-        .animation(.ssPanelSpring, value: chatViewModel.showVNCFeed)
     }
 
     // MARK: - Medium Expansion Helpers
 
+    private var firstName: String {
+        authManager.userName?.components(separatedBy: " ").first ?? "Twin"
+    }
+
     private var displayText: String {
-        if !chatViewModel.isConnected {
-            return "Waking up..."
-        }
         if reduceMotion && isActiveState {
             return chatViewModel.twinState == .thinking ? "Thinking..." : "Working..."
         }
         switch chatViewModel.twinState {
-        case .idle:              return "Ready"
         case .thinking, .working:
             return ThinkingWords.all[currentWordIndex % ThinkingWords.all.count]
-        case .complete:          return "Done!"
-        case .error:             return "Oops"
+        case .error:
+            return "Oops"
+        default:
+            return "Other \(firstName) is Ready!"
         }
     }
 
     @ViewBuilder
     private var statusIndicator: some View {
-        if chatViewModel.twinState == .complete {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 10))
-                .foregroundColor(Color.ssSuccess)
-                .transition(.scale.combined(with: .opacity))
-        } else {
-            Circle()
-                .fill(statusDotColor)
-                .frame(width: 5, height: 5)
-                .opacity(dotPulsePhase ? 0.3 : 1.0)
-        }
+        Circle()
+            .fill(statusDotColor)
+            .frame(width: 5, height: 5)
+            .opacity(dotPulsePhase ? 0.3 : 1.0)
     }
 
     private var statusDotColor: Color {
@@ -291,13 +260,11 @@ struct ExpandedNotchContent: View {
     }
 
     private var accessibilityStatusText: String {
-        if !chatViewModel.isConnected { return "Connecting" }
         switch chatViewModel.twinState {
-        case .idle:     return "Ready"
         case .thinking: return "Thinking"
         case .working:  return "Working"
-        case .complete: return "Complete"
         case .error:    return "Error"
+        default:        return "\(firstName) is ready"
         }
     }
 }
