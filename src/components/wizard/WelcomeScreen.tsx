@@ -52,10 +52,15 @@ export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps)
       // 5. Advance wizard
       onNext();
     } catch (err) {
-      console.error("Auth failed:", err);
       setError(err instanceof Error ? err.message : "Sign-in failed. Try again.");
       setLoading(false);
     }
+  };
+
+  const handleSkipAuth = () => {
+    const demoSessionId = `demo-${crypto.randomUUID()}`;
+    onSession(demoSessionId, "");
+    onNext();
   };
 
   return (
@@ -78,9 +83,17 @@ export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps)
           <p className="text-red-500 text-sm text-center">{error}</p>
         )}
 
-        <Button onClick={handleClick} disabled={loading}>
-          {loading ? "signing in..." : "let\u0027s build you"}
-        </Button>
+        <div className="flex flex-col items-center gap-3 w-full">
+          <Button onClick={handleClick} disabled={loading}>
+            {loading ? "signing in..." : "let\u0027s build you"}
+          </Button>
+          <button
+            onClick={handleSkipAuth}
+            className="text-sm text-black/40 hover:text-black/60 transition-colors underline underline-offset-2"
+          >
+            try without sign-in (web search only)
+          </button>
+        </div>
       </div>
     </div>
   );

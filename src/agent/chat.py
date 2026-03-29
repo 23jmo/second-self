@@ -1,29 +1,126 @@
-"""Chat handler — Claude Agent SDK version.
+"""Chat handler — Anthropic SDK with tool use + deep memory context.
 
-Takes a user message + their SecondSelfProfile, runs the Agent SDK
-with custom MCP tools for Gmail, Calendar, and web search.
-Session history is managed by the SDK automatically.
+Takes a user message + their profile (slim or rich), runs a tool-use loop
+via the Anthropic Messages API. When a RichProfile is available, the system
+prompt includes the full identity.md, preferences.md, episodic memory,
+and relationship context from the deep pipeline.
 """
 
-import json
 import logging
 import os
+from typing import Any
 
-from claude_agent_sdk import (
-    query,
-    ClaudeAgentOptions,
-    ResultMessage,
-    AssistantMessage,
-    ToolUseBlock,
-)
+import anthropic
 
-from src.agent.tools import create_tools_server
-from src.models.schemas import ActionTaken, SecondSelfProfile
+from src.agent.tool_defs import TOOL_DEFINITIONS, dispatch_tool
+from src.db.chat_repository import get_messages, save_messages
+from src.models.schemas import ActionTaken, RichProfile, SecondSelfProfile
 
 log = logging.getLogger("second-self")
 
-# SDK session mapping — maps our session_id to the Agent SDK's session_id
-_SDK_SESSION_MAP_PATH = os.path.join(os.path.dirname(__file__), "..", "..", ".sdk_session_map.json")
+
+# ---------------------------------------------------------------------------
+# System prompt builders
+# ---------------------------------------------------------------------------
+
+def _build_rich_system_prompt(p: RichProfile) -> str:
+    """Build a comprehensive system prompt from the full memory pipeline."""
+    sections: list[str] = []
+
+    # Core instruction
+    sections.append(
+        f"You are acting as a digital twin / second self for {p.identity.name}.\n"
+        "You have deep knowledge of who they are, how they write, how they work, "
+        "and their history. Use this knowledge to act exactly as they would."
+    )
+
+    # Identity profile (full markdown from the deep pipeline)
+    if p.identity_md:
+        sections.append(f"=== IDENTITY PROFILE ===\n{p.identity_md}")
+
+    # Preferences (schedule, work patterns, tools)
+    if p.preferences_md:
+        sections.append(f"=== PREFERENCES ===\n{p.preferences_md}")
+
+    # Episodic memory (recent life events, agent actions)
+    if p.episodic_md:
+        # Trim to last 50 lines to fit in context
+        lines = p.episodic_md.strip().split("\n")
+        recent_lines = lines[:2] + lines[-50:] if len(lines) > 52 else lines
+        sections.append(f"=== EPISODIC MEMORY (recent events) ===\n" + "\n".join(recent_lines))
+
+    # Relationships (inner circle contacts)
+    if p.relationships:
+        contacts = p.relationships.get("contacts", [])[:15]
+        if contacts:
+            rel_lines = ["=== KEY RELATIONSHIPS ==="]
+            clusters = p.relationships.get("clusters", {})
+            rel_lines.append(
+                f"Inner circle: {clusters.get('inner_circle', 0)}, "
+                f"Colleagues: {clusters.get('colleagues', 0)}, "
+                f"Acquaintances: {clusters.get('acquaintances', 0)}"
+            )
+            for c in contacts:
+                score = c.get("closeness_score", 0)
+                tier = "inner circle" if score > 0.7 else "colleague" if score >= 0.4 else "acquaintance"
+                rel_lines.append(
+                    f"- {c.get('email', '?')} ({tier}, "
+                    f"sent: {c.get('sent_count', 0)}, "
+                    f"received: {c.get('received_count', 0)})"
+                )
+            sections.append("\n".join(rel_lines))
+
+    # Voice details (for precise style matching)
+    if p.voice_raw:
+        v = p.voice_raw
+        voice_lines = ["=== VOICE FINGERPRINT ==="]
+        voice_lines.append(f"Tone: {v.get('tone_descriptor', 'unknown')}")
+        voice_lines.append(f"Avg sentence length: {v.get('avg_sentence_length', 'N/A')} words")
+        vocab = v.get("vocabulary_markers", [])[:10]
+        if vocab:
+            voice_lines.append(f"Signature vocabulary: {', '.join(vocab)}")
+        voice_lines.append(f"Emoji usage: {v.get('emoji_frequency', 0)} per email")
+        voice_lines.append(f"Question tendency: {v.get('question_ratio', 0)}%")
+
+        cs = v.get("code_switching", {})
+        if cs.get("detected"):
+            voice_lines.append("Code-switching detected:")
+            for group, data in cs.get("per_group", {}).items():
+                voice_lines.append(
+                    f"  {group}: avg {data.get('avg_sentence_length', 'N/A')} words/sentence, "
+                    f"{data.get('question_ratio', 'N/A')}% questions"
+                )
+        sections.append("\n".join(voice_lines))
+
+    # Topics (what they work on / are interested in)
+    if p.topics:
+        topic_lines = ["=== TOPICS & INTERESTS ==="]
+        for t in p.topics[:15]:
+            topic_lines.append(
+                f"- {t.get('name', '?')} "
+                f"(source: {t.get('source', '?')}, "
+                f"confidence: {t.get('confidence', '?')})"
+            )
+        sections.append("\n".join(topic_lines))
+
+    # Instructions
+    sections.append(
+        "=== INSTRUCTIONS ===\n"
+        "- When writing emails or messages, match their voice EXACTLY — use their "
+        "vocabulary markers, sentence length, opener/signoff patterns, and tone.\n"
+        "- If code-switching is detected, adjust formality based on the recipient's domain.\n"
+        "- Use tools to execute tasks. Don't just describe what you'd do — actually do it.\n"
+        "- When asked to send an email, FIRST use draft_email to show a preview, "
+        "then ask for confirmation.\n"
+        "- When the user mentions someone by name, use get_contact_info to look up their email.\n"
+        "- When asked to 'catch up' on emails, use summarize_emails.\n"
+        "- Reference their episodic memory when relevant (recent events, ongoing projects).\n"
+        "- Use their relationship context to personalize interactions (address style, closeness).\n"
+        "- After completing an action, briefly confirm what you did.\n"
+        "- You have full conversation history. Reference earlier messages when relevant."
+    )
+
+    return "\n\n".join(sections)
 
 
 def _get_sdk_session_id(our_session_id: str) -> str | None:
@@ -44,39 +141,6 @@ def _save_sdk_session_mapping(our_session_id: str, sdk_session_id: str) -> None:
     mapping[our_session_id] = sdk_session_id
     with open(_SDK_SESSION_MAP_PATH, "w") as f:
         json.dump(mapping, f)
-
-
-def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
-    """Build a human-readable summary from tool call inputs."""
-    if tool_name == "send_email":
-        return f"Sent email to {tool_input.get('to')} — '{tool_input.get('subject')}'"
-    elif tool_name == "draft_email":
-        return f"Drafted email to {tool_input.get('to')} — '{tool_input.get('subject')}'"
-    elif tool_name == "reply_to_email":
-        return f"Replied to thread {tool_input.get('thread_id', '')[:12]}"
-    elif tool_name == "read_emails":
-        return f"Searched emails: {tool_input.get('query')}"
-    elif tool_name == "get_contact_info":
-        return f"Looked up contact: {tool_input.get('name')}"
-    elif tool_name == "summarize_emails":
-        return f"Summarized emails: {tool_input.get('query')}"
-    elif tool_name == "create_event":
-        return f"Created event '{tool_input.get('title')}'"
-    elif tool_name == "update_event":
-        return f"Updated event {tool_input.get('event_id', '')[:12]}"
-    elif tool_name == "delete_event":
-        return f"Deleted event {tool_input.get('event_id', '')[:12]}"
-    elif tool_name == "list_events":
-        return f"Listed events ({tool_input.get('days_ahead', 7)} days ahead)"
-    elif tool_name == "create_document":
-        return f"Created Google Doc: '{tool_input.get('title')}'"
-    elif tool_name == "create_presentation":
-        return f"Created Google Slides: '{tool_input.get('title')}'"
-    elif tool_name == "share_document":
-        return f"Shared file with {tool_input.get('email')} as {tool_input.get('role', 'writer')}"
-    elif tool_name == "search_web":
-        return f"Web search: {tool_input.get('query')}"
-    return str(tool_input)[:200]
 
 
 def _build_system_prompt(profile: SecondSelfProfile) -> str:
@@ -123,86 +187,148 @@ After you do something, confirm it in one short sentence. Done. Move on.
 You remember everything from this conversation. Never re-ask for something {first_name} already told you."""
 
 
-# All MCP tool names with the server prefix
-_ALL_TOOL_NAMES = [
-    "mcp__second_self__send_email",
-    "mcp__second_self__draft_email",
-    "mcp__second_self__reply_to_email",
-    "mcp__second_self__read_emails",
-    "mcp__second_self__get_contact_info",
-    "mcp__second_self__summarize_emails",
-    "mcp__second_self__create_event",
-    "mcp__second_self__update_event",
-    "mcp__second_self__delete_event",
-    "mcp__second_self__list_events",
-    "mcp__second_self__create_document",
-    "mcp__second_self__create_presentation",
-    "mcp__second_self__share_document",
-    "mcp__second_self__search_web",
-]
+def _summarize_tool_input(tool_name: str, tool_input: dict) -> str:
+    summaries = {
+        "send_email": lambda a: f"Sent email to {a.get('to')} — '{a.get('subject')}'",
+        "draft_email": lambda a: f"Drafted email to {a.get('to')} — '{a.get('subject')}'",
+        "reply_to_email": lambda a: f"Replied to thread {a.get('thread_id', '')[:12]}",
+        "read_emails": lambda a: f"Searched emails: {a.get('query')}",
+        "get_contact_info": lambda a: f"Looked up contact: {a.get('name')}",
+        "summarize_emails": lambda a: f"Summarized emails: {a.get('query')}",
+        "create_event": lambda a: f"Created event '{a.get('title')}'",
+        "update_event": lambda a: f"Updated event {a.get('event_id', '')[:12]}",
+        "delete_event": lambda a: f"Deleted event {a.get('event_id', '')[:12]}",
+        "list_events": lambda a: f"Listed events ({a.get('days_ahead', 7)} days ahead)",
+        "create_document": lambda a: f"Created Google Doc: '{a.get('title')}'",
+        "create_presentation": lambda a: f"Created Google Slides: '{a.get('title')}'",
+        "share_document": lambda a: f"Shared file with {a.get('email')} as {a.get('role', 'writer')}",
+        "search_web": lambda a: f"Web search: {a.get('query')}",
+    }
+    fn = summaries.get(tool_name)
+    return fn(tool_input) if fn else str(tool_input)[:200]
 
+
+# ---------------------------------------------------------------------------
+# Main chat handler
+# ---------------------------------------------------------------------------
 
 async def handle_chat(
     message: str,
-    profile: SecondSelfProfile,
+    profile: SecondSelfProfile | RichProfile,
     session_id: str,
+    uid: str = "",
     access_token: str | None = None,
 ) -> tuple[str, list[ActionTaken]]:
-    """Process a chat message using the Claude Agent SDK.
+    """Process a chat message using the Anthropic Messages API with tool use.
 
-    Creates an MCP server with all tools (capturing the access_token),
-    runs the agent loop via query(), and returns the response + actions.
-    Session history is managed by the SDK.
-
-    Returns (response_text, list_of_actions_taken).
+    Uses the rich profile (if available) to build a comprehensive system prompt
+    with all memory layers. Falls back to slim prompt otherwise.
     """
-    # Create per-request MCP server with the current access_token
-    tools_server = create_tools_server(access_token)
-    system_prompt = _build_system_prompt(profile)
+    client = anthropic.AsyncAnthropic()
+    model = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 
-    # Look up existing SDK session for conversation continuity
-    sdk_session_id = _get_sdk_session_id(session_id)
+    # Build system prompt based on profile type
+    if isinstance(profile, RichProfile) and profile.identity_md:
+        system_prompt = _build_rich_system_prompt(profile)
+        log.info("Using rich system prompt (%d chars)", len(system_prompt))
+    else:
+        system_prompt = _build_slim_system_prompt(profile)
+        log.info("Using slim system prompt (%d chars)", len(system_prompt))
 
-    options = ClaudeAgentOptions(
-        system_prompt=system_prompt,
-        model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
-        mcp_servers={"second_self": tools_server},
-        allowed_tools=_ALL_TOOL_NAMES,
-        tools=[],  # disable built-in tools (Read, Write, Bash, etc.)
-        permission_mode="bypassPermissions",
-        max_turns=10,
-        resume=sdk_session_id,
-    )
+    # Load conversation history from Firestore
+    messages = get_messages(uid, session_id) if uid else []
+    messages.append({"role": "user", "content": message})
 
     actions_taken: list[ActionTaken] = []
+    max_turns = 10
+    response = None
+
+    for _ in range(max_turns):
+        response = await client.messages.create(
+            model=model,
+            max_tokens=2048,
+            system=system_prompt,
+            tools=TOOL_DEFINITIONS,
+            messages=messages,
+        )
+
+        # Serialize content blocks for JSON-safe history
+        serialized_content = []
+        for block in response.content:
+            if block.type == "text":
+                serialized_content.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                serialized_content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+        messages.append({"role": "assistant", "content": serialized_content})
+
+        if response.stop_reason == "end_turn":
+            break
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    log.info("Tool call: %s", block.name)
+                    summary = _summarize_tool_input(block.name, block.input)
+                    actions_taken.append(ActionTaken(tool=block.name, summary=summary))
+
+                    try:
+                        result = await dispatch_tool(block.name, block.input, access_token)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+                    except Exception as e:
+                        log.warning("Tool %s failed: %s", block.name, e)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": f"Error: {e}",
+                            "is_error": True,
+                        })
+
+            messages.append({"role": "user", "content": tool_results})
+
+            # Log episodic event for tool actions
+            try:
+                from utils.episodic_writer import append_event as file_append
+                from src.db.episodic_repository import append_event as db_append
+                for action in actions_taken[-len(tool_results):]:
+                    file_append(
+                        summary=action.summary,
+                        category="agent_action",
+                        source="chat",
+                    )
+                    if uid:
+                        db_append(
+                            uid=uid,
+                            summary=action.summary,
+                            category="agent_action",
+                            source="chat",
+                        )
+            except Exception as e:
+                log.debug("Episodic write skipped: %s", e)
+        else:
+            break
+
+    # Save conversation history to Firestore
+    if uid:
+        try:
+            save_messages(uid, session_id, messages)
+        except Exception as e:
+            log.warning("Chat history save failed: %s", e)
+
+    # Extract final text
     response_text = ""
-    new_sdk_session_id = None
+    if response:
+        for block in response.content:
+            if hasattr(block, "text"):
+                response_text += block.text
 
-    log.info(f"Chat request: session={session_id}, sdk_session={sdk_session_id}, has_token={access_token is not None}")
-
-    async for msg in query(prompt=message, options=options):
-        if isinstance(msg, AssistantMessage):
-            for block in msg.content:
-                if isinstance(block, ToolUseBlock):
-                    # Strip MCP prefix: "mcp__second_self__send_email" -> "send_email"
-                    raw_name = block.name
-                    tool_name = raw_name.split("__")[-1] if "__" in raw_name else raw_name
-                    summary = _summarize_tool_input(tool_name, block.input)
-                    actions_taken.append(ActionTaken(tool=tool_name, summary=summary))
-                    log.info(f"Tool call: {tool_name} — {summary}")
-
-        elif isinstance(msg, ResultMessage):
-            new_sdk_session_id = msg.session_id
-            if msg.subtype == "success" and msg.result:
-                response_text = msg.result
-            elif msg.subtype != "success":
-                log.warning(f"Agent SDK result: {msg.subtype}")
-
-    # Save the SDK session mapping for conversation continuity
-    if new_sdk_session_id:
-        _save_sdk_session_mapping(session_id, new_sdk_session_id)
-
-    if not response_text:
-        response_text = "I completed the task but hit the action limit."
-
-    return response_text, actions_taken
+    return response_text or "I completed the task but hit the action limit.", actions_taken

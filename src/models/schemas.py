@@ -64,6 +64,18 @@ class SecondSelfProfile(BaseModel):
     context: Context
 
 
+class RichProfile(SecondSelfProfile):
+    """Extended profile carrying full memory layer data for the chat agent."""
+    identity_md: str = ""
+    preferences_md: str = ""
+    episodic_md: str = ""
+    relationships: dict = {}
+    voice_raw: dict = {}
+    topics: list = []
+    behavior_raw: dict = {}
+    public_profile: dict = {}
+
+
 # --- Response Model ---
 
 class OnboardResponse(BaseModel):

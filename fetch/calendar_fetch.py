@@ -80,12 +80,14 @@ def _parse_event(event: dict[str, Any], user_email: str) -> dict[str, Any] | Non
     - All-day event with no attendees
     - User is the only attendee
     """
-    # Check if user declined
+    # Check user's response status
     attendees = event.get("attendees", [])
     user_lower = user_email.lower()
+    user_status = "accepted"  # default when user is organizer or no attendee list
     for att in attendees:
         if att.get("email", "").lower() == user_lower:
-            if att.get("responseStatus") == "declined":
+            user_status = att.get("responseStatus", "accepted")
+            if user_status == "declined":
                 return None
             break
 
@@ -116,6 +118,7 @@ def _parse_event(event: dict[str, Any], user_email: str) -> dict[str, Any] | Non
         "end": end_dt,
         "attendees": attendee_emails,
         "is_recurring": is_recurring,
+        "status": user_status,
     }
 
 

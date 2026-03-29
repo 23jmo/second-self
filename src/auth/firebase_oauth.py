@@ -5,41 +5,21 @@ the scary "unverified app" warning. We serve a login page that uses the
 Firebase JS SDK to sign in with Google, then POST the tokens back here.
 """
 
+import hashlib
+import logging
 import os
 
-import firebase_admin
-from firebase_admin import auth as firebase_auth, credentials as firebase_creds
-from fastapi import APIRouter, Cookie, HTTPException, Request
+from firebase_admin import auth as firebase_auth
+from fastapi import APIRouter, Cookie
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from src.auth.token_store import create_session, get_session
+from src.db.firestore_client import _ensure_firebase_initialized
+
+log = logging.getLogger("second-self")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-# Initialize Firebase Admin SDK (uses GOOGLE_APPLICATION_CREDENTIALS env var
-# or can be initialized without credentials for ID token verification only)
-_firebase_initialized = False
-
-
-def _init_firebase():
-    global _firebase_initialized
-    if _firebase_initialized:
-        return
-    try:
-        # Try service account file first
-        sa_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
-        if sa_path and os.path.exists(sa_path):
-            cred = firebase_creds.Certificate(sa_path)
-            firebase_admin.initialize_app(cred)
-        else:
-            # Initialize with project ID for ID token verification
-            options = {"projectId": os.getenv("FIREBASE_PROJECT_ID")}
-            firebase_admin.initialize_app(options=options)
-        _firebase_initialized = True
-    except ValueError:
-        # Already initialized
-        _firebase_initialized = True
 
 
 class AuthCallbackRequest(BaseModel):
@@ -47,6 +27,23 @@ class AuthCallbackRequest(BaseModel):
     google_access_token: str
     email: str
     name: str
+
+
+def _extract_uid(id_token: str, email: str) -> str:
+    """Verify Firebase ID token and extract UID.
+
+    Falls back to a deterministic hash of the email if verification fails
+    (e.g., no service account configured for local dev).
+    """
+    _ensure_firebase_initialized()
+    try:
+        decoded = firebase_auth.verify_id_token(id_token)
+        uid = decoded["uid"]
+        log.info("Firebase ID token verified: uid=%s", uid)
+        return uid
+    except Exception as exc:
+        log.warning("Firebase ID token verification failed (%s), using email hash as UID", exc)
+        return hashlib.sha256(email.encode()).hexdigest()[:28]
 
 
 @router.get("/firebase-config")
@@ -75,10 +72,10 @@ async def auth_callback(body: AuthCallbackRequest):
       - Google access token (for Gmail/Calendar API calls)
       - User email and name
     """
-    # Store the Google access token and create a session
-    # Note: skipping Firebase ID token verification for local demo
-    # The frontend already authenticated via Firebase/Google
+    uid = _extract_uid(body.id_token, body.email)
+
     session_id = create_session(
+        uid=uid,
         google_access_token=body.google_access_token,
         email=body.email,
         name=body.name,
