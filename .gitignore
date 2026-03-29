@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 *.log
 *.err
+.gstack/
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+DerivedData/

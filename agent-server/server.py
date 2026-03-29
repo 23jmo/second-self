@@ -6,19 +6,26 @@ Must run in the GUI session context (not via SSH or su) for display access.
 
 import json
 import os
+import sys
 import subprocess
 import base64
 import io
 import time
+import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 PORT = 8421
+
+# Shared frame buffer: main thread captures, worker threads read
+_latest_frame = None
+_frame_lock = threading.Lock()
 
 
 def take_screenshot() -> str:
     """Capture the screen, return base64-encoded PNG."""
     import pyautogui
     img = pyautogui.screenshot()
+    img = img.convert("RGB")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -156,27 +163,33 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._respond(404, {"error": "not found"})
 
     def _stream_screen(self):
-        """MJPEG stream of the desktop. Open http://localhost:8421/stream in a browser."""
-        import pyautogui
+        """MJPEG stream. Reads frames from shared buffer (main thread captures)."""
+        print("[agent-server] STREAM: client connected")
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        self.wfile.flush()
+        frame_count = 0
         try:
             while True:
-                img = pyautogui.screenshot()
-                buf = io.BytesIO()
-                img = img.resize((img.width // 2, img.height // 2))
-                img.save(buf, format="JPEG", quality=60)
-                frame = buf.getvalue()
+                with _frame_lock:
+                    frame = _latest_frame
+                if frame is None:
+                    time.sleep(0.1)
+                    continue
                 self.wfile.write(b"--frame\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(frame)}\r\n\r\n".encode())
                 self.wfile.write(frame)
                 self.wfile.write(b"\r\n")
-                time.sleep(0.15)  # ~6-7 fps
+                self.wfile.flush()
+                frame_count += 1
+                if frame_count <= 3 or frame_count % 50 == 0:
+                    print(f"[agent-server] STREAM: frame {frame_count} ({len(frame)} bytes)")
+                time.sleep(0.15)
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            print(f"[agent-server] STREAM: disconnected after {frame_count} frames")
 
     def _serve_viewer(self):
         """Simple HTML page that shows the live stream."""
@@ -221,9 +234,29 @@ class AgentHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    print(f"[agent-server] Starting on port {PORT}")
+    global _latest_frame
+    import pyautogui
+
     print(f"[agent-server] Available tools: {list(TOOLS.keys())}")
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), AgentHandler)
+    ThreadingHTTPServer.allow_reuse_address = True
+
+    # Try the default port, fall back to next available if zombie socket exists
+    bound_port = PORT
+    server = None
+    for try_port in [PORT, PORT + 1, PORT + 2]:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", try_port), AgentHandler)
+            bound_port = try_port
+            break
+        except OSError as e:
+            if e.errno == 48:
+                print(f"[agent-server] Port {try_port} busy, trying next...")
+                continue
+            raise
+    if server is None:
+        print(f"[agent-server] ERROR: Could not bind to any port ({PORT}-{PORT+2})")
+        return
+    print(f"[agent-server] Starting on port {bound_port}")
 
     # Verify browser-use CLI is available
     bu_check = run_browser("doctor", timeout=10)
@@ -232,8 +265,47 @@ def main():
     else:
         print(f"[agent-server] browser-use: ready")
 
+    # Start HTTP server in background thread
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    # Main thread: capture screenshots for the MJPEG stream
+    # Uses Quartz CoreGraphics for fast native capture (~100ms vs ~500ms pyautogui)
+    print(f"[agent-server] Screenshot capture running on main thread (Quartz)")
     try:
-        server.serve_forever()
+        import Quartz
+        from PIL import Image
+
+        while True:
+            try:
+                image_ref = Quartz.CGWindowListCreateImage(
+                    Quartz.CGRectInfinite,
+                    Quartz.kCGWindowListOptionOnScreenOnly,
+                    Quartz.kCGNullWindowID,
+                    Quartz.kCGWindowImageDefault
+                )
+                if image_ref is None:
+                    time.sleep(0.5)
+                    continue
+
+                width = Quartz.CGImageGetWidth(image_ref)
+                height = Quartz.CGImageGetHeight(image_ref)
+                bytes_per_row = Quartz.CGImageGetBytesPerRow(image_ref)
+                data_provider = Quartz.CGImageGetDataProvider(image_ref)
+                raw_data = Quartz.CGDataProviderCopyData(data_provider)
+
+                img = Image.frombuffer("RGBA", (width, height), raw_data, "raw", "BGRA", bytes_per_row, 1)
+                img = img.convert("RGB")
+                img = img.resize((width // 2, height // 2))
+
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=60)
+                with _frame_lock:
+                    _latest_frame = buf.getvalue()
+            except Exception as e:
+                print(f"[agent-server] Screenshot error: {e}")
+                time.sleep(0.5)
+            time.sleep(0.1)  # ~10 fps target
     except KeyboardInterrupt:
         print("\n[agent-server] Shutting down")
         server.shutdown()

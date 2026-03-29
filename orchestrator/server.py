@@ -8,14 +8,24 @@ Flow:
   3. Dedalus LLM returns tool calls (screenshot, click, type, etc.)
   4. Orchestrator executes tool calls against Agent Server (port 8421)
   5. Returns results to the LLM for next step (agentic loop)
+
+Layer 0: FastAPI rewrite with job state machine and SSE streaming.
 """
 
+import asyncio
 import json
 import os
 import time
+import uuid
 import urllib.request
 import urllib.error
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+import uvicorn
 
 PORT = 8420
 AGENT_SERVER_URL = "http://localhost:8421"
@@ -24,7 +34,10 @@ DEDALUS_API_KEY = os.environ.get("DEDALUS_API_KEY", "")
 DEDALUS_MODEL = os.environ.get("DEDALUS_MODEL", "gpt-4o")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 
+# ---------------------------------------------------------------------------
 # Tool definitions for Dedalus (OpenAI function calling format)
+# ---------------------------------------------------------------------------
+
 # Browser tools (agent-browser, ref-based)
 BROWSER_TOOLS = [
     {
@@ -209,14 +222,59 @@ TOOL_ENDPOINT_MAP = {
     "scroll": "/tool/scroll",
 }
 
+# ---------------------------------------------------------------------------
+# Job state machine
+# ---------------------------------------------------------------------------
 
-def call_agent_server(endpoint: str, body: dict = None) -> dict:
+VALID_STATES = ("idle", "thinking", "working", "complete", "error")
+
+job_lock = asyncio.Lock()
+current_job: dict = {
+    "id": None,
+    "state": "idle",
+    "task": None,
+    "actions": [],
+    "started_at": None,
+    "message_queue": [],
+}
+
+# Conversation history and cached profile kept across jobs
+conversation_history: list = []
+cached_profile: dict | None = None
+
+
+async def set_job_state(state: str, task: str | None = None, message: str | None = None) -> None:
+    """Transition the job state machine. Must be called under job_lock."""
+    if state not in VALID_STATES:
+        raise ValueError(f"Invalid state: {state}")
+    current_job["state"] = state
+    if state == "idle":
+        current_job["id"] = None
+        current_job["task"] = None
+        current_job["actions"] = []
+        current_job["started_at"] = None
+    elif state == "thinking":
+        current_job["id"] = str(uuid.uuid4())
+        current_job["task"] = task
+        current_job["actions"] = []
+        current_job["started_at"] = time.time()
+    print(f"[orchestrator] State -> {state}" + (f" ({message})" if message else ""))
+
+
+# ---------------------------------------------------------------------------
+# Agent Server helper (urllib — kept from original)
+# ---------------------------------------------------------------------------
+
+def call_agent_server(endpoint: str, body: dict | None = None, method: str = "POST") -> dict:
     """Send a request to the Agent Server running in secondself's session."""
     url = f"{AGENT_SERVER_URL}{endpoint}"
-    data = json.dumps(body or {}).encode()
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-    )
+    if method == "GET":
+        req = urllib.request.Request(url, method="GET")
+    else:
+        data = json.dumps(body or {}).encode()
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
@@ -226,12 +284,16 @@ def call_agent_server(endpoint: str, body: dict = None) -> dict:
         return {"error": str(e)}
 
 
-def call_dedalus(messages: list, tools: list = None) -> dict:
-    """Call the Dedalus API (OpenAI-compatible)."""
+# ---------------------------------------------------------------------------
+# Dedalus API helpers
+# ---------------------------------------------------------------------------
+
+def call_dedalus(messages: list, tools: list | None = None) -> dict:
+    """Call the Dedalus API (OpenAI-compatible) — non-streaming."""
     if not DEDALUS_API_KEY:
         return {"error": "DEDALUS_API_KEY not set"}
 
-    payload = {
+    payload: dict = {
         "model": DEDALUS_MODEL,
         "messages": messages,
         "max_tokens": 4096,
@@ -259,6 +321,113 @@ def call_dedalus(messages: list, tools: list = None) -> dict:
         return {"error": str(e)}
 
 
+async def call_dedalus_streaming(messages: list, tools: list | None = None):
+    """
+    Call the Dedalus API with stream=True (OpenAI-compatible SSE).
+    Yields (event_type, data) tuples — either "token" chunks or a final
+    assembled message dict with tool_calls.
+    """
+    if not DEDALUS_API_KEY:
+        yield ("error", {"message": "DEDALUS_API_KEY not set"})
+        return
+
+    payload: dict = {
+        "model": DEDALUS_MODEL,
+        "messages": messages,
+        "max_tokens": 4096,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DEDALUS_API_KEY}",
+    }
+
+    accumulated_content = ""
+    accumulated_tool_calls: dict[int, dict] = {}  # index -> {id, function: {name, arguments}}
+    finish_reason = None
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            async with client.stream(
+                "POST",
+                f"{DEDALUS_API_URL}/chat/completions",
+                json=payload,
+                headers=headers,
+            ) as response:
+                if response.status_code == 429:
+                    yield ("error", {"message": "Dedalus API rate limited (429). Try again later."})
+                    return
+                if response.status_code != 200:
+                    body_text = ""
+                    async for chunk in response.aiter_text():
+                        body_text += chunk
+                    yield ("error", {"message": f"Dedalus API error ({response.status_code}): {body_text[:500]}"})
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    chunk_finish = chunk.get("choices", [{}])[0].get("finish_reason")
+                    if chunk_finish:
+                        finish_reason = chunk_finish
+
+                    # Content tokens
+                    if delta.get("content"):
+                        accumulated_content += delta["content"]
+                        yield ("token", {"text": delta["content"]})
+
+                    # Tool call deltas
+                    for tc_delta in delta.get("tool_calls", []):
+                        idx = tc_delta.get("index", 0)
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {
+                                "id": tc_delta.get("id", ""),
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc_delta.get("id"):
+                            accumulated_tool_calls[idx]["id"] = tc_delta["id"]
+                        fn_delta = tc_delta.get("function", {})
+                        if fn_delta.get("name"):
+                            accumulated_tool_calls[idx]["function"]["name"] += fn_delta["name"]
+                        if fn_delta.get("arguments"):
+                            accumulated_tool_calls[idx]["function"]["arguments"] += fn_delta["arguments"]
+
+    except httpx.TimeoutException:
+        yield ("error", {"message": "Dedalus API request timed out"})
+        return
+    except Exception as e:
+        yield ("error", {"message": f"Dedalus streaming error: {e}"})
+        return
+
+    # Yield the fully assembled message so the caller can use it
+    assembled_message: dict = {"role": "assistant", "content": accumulated_content or None}
+    if accumulated_tool_calls:
+        assembled_message["tool_calls"] = [
+            accumulated_tool_calls[idx]
+            for idx in sorted(accumulated_tool_calls.keys())
+        ]
+
+    yield ("_message", {"message": assembled_message, "finish_reason": finish_reason})
+
+
+# ---------------------------------------------------------------------------
+# Tavily helper
+# ---------------------------------------------------------------------------
+
 def call_tavily(query: str) -> dict:
     """Search the web using Tavily API for user profiling."""
     if not TAVILY_API_KEY:
@@ -285,6 +454,10 @@ def call_tavily(query: str) -> dict:
         return {"error": str(e)}
 
 
+# ---------------------------------------------------------------------------
+# Tool execution
+# ---------------------------------------------------------------------------
+
 def execute_tool_call(tool_name: str, arguments: dict) -> str:
     """Execute a single tool call against the Agent Server."""
     endpoint = TOOL_ENDPOINT_MAP.get(tool_name)
@@ -299,41 +472,50 @@ def execute_tool_call(tool_name: str, arguments: dict) -> str:
     return json.dumps(result)
 
 
+# ---------------------------------------------------------------------------
+# System prompt builder
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = (
+    "You are controlling a macOS desktop with two types of tools:\n"
+    "\n"
+    "BROWSER TOOLS (for any web task - searching, reading pages, filling forms):\n"
+    "  browser_goto(url) - navigate to a URL\n"
+    "  browser_snapshot() - get page elements with refs (ALWAYS call this before clicking/filling)\n"
+    "  browser_click(ref) - click an element by its ref from snapshot\n"
+    "  browser_fill(ref, text) - fill a text field by its ref\n"
+    "  browser_press(key) - press a key (Enter, Tab, etc.)\n"
+    "  browser_text() - get the page text content\n"
+    "\n"
+    "DESKTOP TOOLS (ONLY for native macOS apps like Notes, Finder, Calendar):\n"
+    "  open_app(name) - open a macOS application\n"
+    "  type_text(text) - type on the keyboard\n"
+    "  hotkey(keys) - keyboard shortcut\n"
+    "  click(x, y) - click at pixel coordinates\n"
+    "  screenshot() - capture the desktop\n"
+    "\n"
+    "RULES:\n"
+    "- For ANY web task, use browser_* tools exclusively.\n"
+    "- For native macOS apps, use desktop tools.\n"
+    "- NEVER mix browser and desktop tools in the same step.\n"
+    "- ALWAYS call browser_snapshot() after navigation to get fresh element refs.\n"
+    "- Element refs (like @e3) become stale after page changes - re-snapshot.\n"
+    "Complete the user's task step by step."
+)
+
+
+# ---------------------------------------------------------------------------
+# Agent loop — non-streaming (backward compat for /command)
+# ---------------------------------------------------------------------------
+
 def run_agent_loop(task: str, max_steps: int = 15) -> list:
     """
     Run the agentic loop: send task to LLM, execute tool calls, repeat.
     Returns a list of actions taken.
     """
-    actions = []
-    system_prompt = (
-        "You are controlling a macOS desktop with two types of tools:\n"
-        "\n"
-        "BROWSER TOOLS (for any web task — searching, reading pages, filling forms):\n"
-        "  browser_goto(url) — navigate to a URL\n"
-        "  browser_snapshot() — get page elements with refs (ALWAYS call this before clicking/filling)\n"
-        "  browser_click(ref) — click an element by its ref from snapshot\n"
-        "  browser_fill(ref, text) — fill a text field by its ref\n"
-        "  browser_press(key) — press a key (Enter, Tab, etc.)\n"
-        "  browser_text() — get the page text content\n"
-        "\n"
-        "DESKTOP TOOLS (ONLY for native macOS apps like Notes, Finder, Calendar):\n"
-        "  open_app(name) — open a macOS application\n"
-        "  type_text(text) — type on the keyboard\n"
-        "  hotkey(keys) — keyboard shortcut\n"
-        "  click(x, y) — click at pixel coordinates\n"
-        "  screenshot() — capture the desktop\n"
-        "\n"
-        "RULES:\n"
-        "- For ANY web task, use browser_* tools exclusively.\n"
-        "- For native macOS apps, use desktop tools.\n"
-        "- NEVER mix browser and desktop tools in the same step.\n"
-        "- ALWAYS call browser_snapshot() after navigation to get fresh element refs.\n"
-        "- Element refs (like @e3) become stale after page changes — re-snapshot.\n"
-        "Complete the user's task step by step."
-    )
-
+    actions: list = []
     messages = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": task},
     ]
 
@@ -379,6 +561,104 @@ def run_agent_loop(task: str, max_steps: int = 15) -> list:
 
     return actions
 
+
+# ---------------------------------------------------------------------------
+# Agent loop — streaming (for POST /chat SSE)
+# ---------------------------------------------------------------------------
+
+async def run_agent_loop_streaming(task: str, max_steps: int = 15):
+    """
+    Streaming agentic loop. Yields (event_type, data) tuples for SSE.
+    """
+    yield ("state", {"state": "thinking"})
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": task},
+    ]
+
+    for step in range(max_steps):
+        print(f"[orchestrator] Agent step {step + 1}/{max_steps}")
+        assembled_message = None
+        finish_reason = None
+        had_error = False
+
+        async for event_type, event_data in call_dedalus_streaming(messages, tools=ALL_TOOLS):
+            if event_type == "token":
+                yield ("token", event_data)
+            elif event_type == "error":
+                yield ("error", event_data)
+                had_error = True
+                break
+            elif event_type == "_message":
+                assembled_message = event_data["message"]
+                finish_reason = event_data["finish_reason"]
+
+        if had_error or assembled_message is None:
+            yield ("state", {"state": "error"})
+            async with job_lock:
+                current_job["state"] = "error"
+            return
+
+        # If the LLM responded with text (no tool calls), we're done
+        if finish_reason == "stop" or not assembled_message.get("tool_calls"):
+            content = assembled_message.get("content", "Task complete.")
+            yield ("state", {"state": "complete", "message": content})
+            async with job_lock:
+                current_job["state"] = "complete"
+            return
+
+        # Execute each tool call
+        yield ("state", {"state": "working"})
+        async with job_lock:
+            current_job["state"] = "working"
+
+        messages.append(assembled_message)
+        for tc in assembled_message.get("tool_calls", []):
+            fn_name = tc["function"]["name"]
+            try:
+                fn_args = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                fn_args = {}
+            print(f"[orchestrator]   Tool: {fn_name}({fn_args})")
+
+            yield ("tool_call", {"tool": fn_name, "args": fn_args, "step": step + 1})
+
+            # Execute in a thread to avoid blocking the event loop
+            result_str = await asyncio.to_thread(execute_tool_call, fn_name, fn_args)
+            result_data = json.loads(result_str)
+
+            yield ("tool_result", {"tool": fn_name, "result": result_data, "step": step + 1})
+
+            async with job_lock:
+                current_job["actions"].append({
+                    "step": step + 1,
+                    "type": "tool_call",
+                    "tool": fn_name,
+                    "args": fn_args,
+                    "result": result_data,
+                })
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result_str,
+            })
+
+        # After executing tools, loop back to thinking for next LLM call
+        yield ("state", {"state": "thinking"})
+        async with job_lock:
+            current_job["state"] = "thinking"
+
+    # If we exhausted max_steps, mark complete
+    yield ("state", {"state": "complete", "message": "Reached maximum steps."})
+    async with job_lock:
+        current_job["state"] = "complete"
+
+
+# ---------------------------------------------------------------------------
+# Profile + anticipatory setup (kept from original)
+# ---------------------------------------------------------------------------
 
 def handle_profile(name: str) -> dict:
     """Profile a person using Tavily web search."""
@@ -431,93 +711,13 @@ def handle_anticipatory_setup(profile: dict) -> list:
     return run_agent_loop(task, max_steps=20)
 
 
-class OrchestratorHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
-            # Check if Agent Server is reachable
-            agent_status = call_agent_server("/health")
-            self._respond(200, {
-                "status": "ok",
-                "agent_server": agent_status,
-                "dedalus_configured": bool(DEDALUS_API_KEY),
-                "tavily_configured": bool(TAVILY_API_KEY),
-            })
-        elif self.path == "/status":
-            self._respond(200, {"status": "idle"})
-        else:
-            self._respond(404, {"error": "not found"})
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
 
-    def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = {}
-        if content_length > 0:
-            raw = self.rfile.read(content_length)
-            body = json.loads(raw)
-
-        if self.path == "/command":
-            task = body.get("task", "")
-            if not task:
-                self._respond(400, {"error": "missing 'task' field"})
-                return
-            print(f"[orchestrator] Received command: {task}")
-            actions = run_agent_loop(task)
-            self._respond(200, {"task": task, "actions": actions})
-
-        elif self.path == "/profile":
-            name = body.get("name", "")
-            if not name:
-                self._respond(400, {"error": "missing 'name' field"})
-                return
-            print(f"[orchestrator] Profiling: {name}")
-            profile = handle_profile(name)
-            self._respond(200, profile)
-
-        elif self.path == "/setup-twin":
-            profile = body.get("profile", {})
-            if not profile:
-                self._respond(400, {"error": "missing 'profile' field"})
-                return
-            print(f"[orchestrator] Setting up twin for: {profile.get('name', 'unknown')}")
-            actions = handle_anticipatory_setup(profile)
-            self._respond(200, {"actions": actions})
-
-        elif self.path == "/demo":
-            # Full demo loop: name -> profile -> setup -> ready for commands
-            name = body.get("name", "")
-            if not name:
-                self._respond(400, {"error": "missing 'name' field"})
-                return
-            print(f"[orchestrator] === DEMO LOOP for: {name} ===")
-
-            # Step 1: Profile
-            print("[orchestrator] Step 1: Profiling...")
-            profile = handle_profile(name)
-
-            # Step 2: Anticipatory setup
-            print("[orchestrator] Step 2: Setting up twin...")
-            setup_actions = handle_anticipatory_setup(profile)
-
-            self._respond(200, {
-                "name": name,
-                "profile": profile,
-                "setup_actions": setup_actions,
-                "status": "ready_for_commands",
-            })
-        else:
-            self._respond(404, {"error": f"unknown endpoint: {self.path}"})
-
-    def _respond(self, code: int, data: dict):
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-
-    def log_message(self, format, *args):
-        print(f"[orchestrator] {args[0]} {args[1]} {args[2]}")
-
-
-def main():
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Startup / shutdown lifecycle."""
     if not DEDALUS_API_KEY:
         print("[orchestrator] WARNING: DEDALUS_API_KEY not set. Set it: export DEDALUS_API_KEY=your_key")
     if not TAVILY_API_KEY:
@@ -527,13 +727,205 @@ def main():
     print(f"[orchestrator] Agent Server expected at {AGENT_SERVER_URL}")
     print(f"[orchestrator] Dedalus API at {DEDALUS_API_URL}")
     print(f"[orchestrator] Model: {DEDALUS_MODEL}")
+    yield
+    print("[orchestrator] Shutting down")
 
-    server = HTTPServer(("127.0.0.1", PORT), OrchestratorHandler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[orchestrator] Shutting down")
-        server.shutdown()
+
+app = FastAPI(title="Second Self Orchestrator", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Exception handlers
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(json.JSONDecodeError)
+async def json_decode_error_handler(request: Request, exc: json.JSONDecodeError):
+    """Handle malformed JSON request bodies."""
+    return JSONResponse(status_code=400, content={"error": f"Invalid JSON: {exc.msg}"})
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+async def health():
+    """Health check — also pings the Agent Server with a GET request."""
+    agent_status = await asyncio.to_thread(call_agent_server, "/health", None, "GET")
+    return {
+        "status": "ok",
+        "agent_server": agent_status,
+        "dedalus_configured": bool(DEDALUS_API_KEY),
+        "tavily_configured": bool(TAVILY_API_KEY),
+    }
+
+
+@app.get("/status")
+async def status():
+    """Return the current job state."""
+    async with job_lock:
+        return {
+            "id": current_job["id"],
+            "state": current_job["state"],
+            "task": current_job["task"],
+            "actions_count": len(current_job["actions"]),
+            "started_at": current_job["started_at"],
+            "queued_messages": len(current_job["message_queue"]),
+        }
+
+
+@app.post("/command")
+async def command(request: Request):
+    """Legacy command endpoint — runs agent loop synchronously and returns JSON."""
+    body = await request.json()
+    task = body.get("task", "")
+    if not task:
+        return JSONResponse(status_code=400, content={"error": "missing 'task' field"})
+    print(f"[orchestrator] Received command: {task}")
+    actions = await asyncio.to_thread(run_agent_loop, task)
+    return {"task": task, "actions": actions}
+
+
+@app.post("/profile")
+async def profile(request: Request):
+    """Profile a person using Tavily web search."""
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "missing 'name' field"})
+    print(f"[orchestrator] Profiling: {name}")
+    result = await asyncio.to_thread(handle_profile, name)
+    return result
+
+
+@app.post("/setup-twin")
+async def setup_twin(request: Request):
+    """Set up the twin desktop based on a profile."""
+    body = await request.json()
+    profile_data = body.get("profile", {})
+    if not profile_data:
+        return JSONResponse(status_code=400, content={"error": "missing 'profile' field"})
+    print(f"[orchestrator] Setting up twin for: {profile_data.get('name', 'unknown')}")
+    actions = await asyncio.to_thread(handle_anticipatory_setup, profile_data)
+    return {"actions": actions}
+
+
+@app.post("/demo")
+async def demo(request: Request):
+    """Full demo loop: name -> profile -> setup -> ready for commands."""
+    body = await request.json()
+    name = body.get("name", "")
+    if not name:
+        return JSONResponse(status_code=400, content={"error": "missing 'name' field"})
+    print(f"[orchestrator] === DEMO LOOP for: {name} ===")
+
+    # Step 1: Profile
+    print("[orchestrator] Step 1: Profiling...")
+    profile_data = await asyncio.to_thread(handle_profile, name)
+
+    # Step 2: Anticipatory setup
+    print("[orchestrator] Step 2: Setting up twin...")
+    setup_actions = await asyncio.to_thread(handle_anticipatory_setup, profile_data)
+
+    return {
+        "name": name,
+        "profile": profile_data,
+        "setup_actions": setup_actions,
+        "status": "ready_for_commands",
+    }
+
+
+@app.post("/chat")
+async def chat(request: Request):
+    """
+    SSE streaming endpoint. Accepts {"message": "..."} and returns
+    a stream of server-sent events as the agent processes the task.
+    """
+    body = await request.json()
+    message = body.get("message", "")
+    if not message:
+        return JSONResponse(status_code=400, content={"error": "missing 'message' field"})
+
+    # If we're busy, queue the message
+    async with job_lock:
+        if current_job["state"] not in ("idle", "complete", "error"):
+            current_job["message_queue"].append(message)
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "position": len(current_job["message_queue"]),
+                    "message": "Agent is busy. Your message has been queued.",
+                },
+            )
+        await set_job_state("thinking", task=message)
+
+    print(f"[orchestrator] Chat message: {message}")
+
+    async def event_stream():
+        last_ping = time.time()
+        try:
+            async for event_type, event_data in run_agent_loop_streaming(message):
+                sse_line = f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                yield sse_line
+                last_ping = time.time()
+
+                # Send pings during idle periods (handled between events)
+                if time.time() - last_ping >= 3:
+                    yield f"event: ping\ndata: {{}}\n\n"
+                    last_ping = time.time()
+        except Exception as e:
+            print(f"[orchestrator] SSE stream error: {e}")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+            async with job_lock:
+                current_job["state"] = "error"
+        finally:
+            # Always return to idle state after stream ends
+            async with job_lock:
+                await set_job_state("idle")
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/reset")
+async def reset():
+    """Reset all state for demo transitions."""
+    global cached_profile
+    async with job_lock:
+        current_job["id"] = None
+        current_job["state"] = "idle"
+        current_job["task"] = None
+        current_job["actions"] = []
+        current_job["started_at"] = None
+        current_job["message_queue"] = []
+    conversation_history.clear()
+    cached_profile = None
+    print("[orchestrator] State reset to idle")
+    return {"status": "ok", "message": "State cleared"}
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    uvicorn.run(app, host="127.0.0.1", port=PORT)
 
 
 if __name__ == "__main__":
