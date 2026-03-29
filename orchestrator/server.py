@@ -773,9 +773,23 @@ def _append_to_history(role: str, content) -> None:
     global _conversation_history
     _conversation_history.append({"role": role, "content": content})
 
-    # Trim to max history
+    # Trim to max history — find a safe cut point that doesn't break
+    # tool_use/tool_result pairs or start with an assistant message
     if len(_conversation_history) > MAX_HISTORY_MESSAGES:
-        _conversation_history = _conversation_history[-MAX_HISTORY_MESSAGES:]
+        trimmed = _conversation_history[-MAX_HISTORY_MESSAGES:]
+        # Walk forward to find a user message that isn't a tool_result
+        # (safe conversation boundary)
+        for i in range(len(trimmed)):
+            msg = trimmed[i]
+            if msg["role"] != "user":
+                continue
+            # Skip bare tool_result messages (they need the preceding tool_use)
+            content = msg.get("content", "")
+            if isinstance(content, list) and content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                continue
+            trimmed = trimmed[i:]
+            break
+        _conversation_history = trimmed
 
     # Persist to Firestore
     if _user_uid:
@@ -879,8 +893,8 @@ async def run_agent_loop_streaming(task: str, max_steps: int = 15, source: str =
         _append_to_history("assistant", content_blocks)
 
         # If no tool calls, we're done
+        # (assistant message already appended to history on line above)
         if stop_reason == "end_turn" or not tool_calls:
-            _conversation_history.append({"role": "assistant", "content": text_content or "Task complete."})
             yield ("state", {"state": "complete", "message": text_content or "Task complete."})
             async with job_lock:
                 current_job["state"] = "complete"

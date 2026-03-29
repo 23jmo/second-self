@@ -100,13 +100,19 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - User Identity
 
-    private func fetchUserName() {
+    private func fetchUserName(attempt: Int = 1) {
         guard let url = URL(string: ServerConfig.sessionEndpoint) else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
             guard let self, let data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let found = json["found"] as? Bool, found,
                   let fullName = json["name"] as? String, !fullName.isEmpty else {
+                // Auth server may not be up yet — retry up to 5 times
+                if attempt < 5 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Double(attempt)) {
+                        self?.fetchUserName(attempt: attempt + 1)
+                    }
+                }
                 return
             }
             let firstName = fullName.components(separatedBy: " ").first ?? fullName
