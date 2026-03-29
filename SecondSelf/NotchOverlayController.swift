@@ -21,7 +21,7 @@ final class NotchOverlayController: NSObject {
     private var localClickMonitor: Any?
     private var globalClickMonitor: Any?
 
-    // Track current state for toggle
+    // Track current state: 0=compact, 1=status mini, 2=full chat
     private var isExpanded = false
 
     override init() {
@@ -41,6 +41,13 @@ final class NotchOverlayController: NSObject {
 
         super.init()
 
+        // Configure DynamicNotchKit transitions: use our panel spring,
+        // skip the 250ms hide→show flash when switching compact↔expanded
+        dynamicNotch.transitionConfiguration = .init(
+            conversionAnimation: .ssPanelSpring,
+            skipIntermediateHides: true
+        )
+
         // Wire tap callbacks through the shared view model
         viewModel.onNotchTap = { [weak self] in
             self?.togglePanel()
@@ -59,22 +66,34 @@ final class NotchOverlayController: NSObject {
         installGlobalClickMonitor()
     }
 
-    // MARK: - Toggle (for hotkey)
+    // MARK: - 3-Stage Toggle
 
+    /// Cycles: compact(0) → status mini(1) → full chat(2) → compact(0)
     func togglePanel() {
-        Task {
-            if isExpanded {
-                await dynamicNotch.compact()
-                isExpanded = false
-            } else {
+        let currentStage = chatViewModel.expansionStage
+
+        switch currentStage {
+        case 0:
+            // Compact → status mini: expand DynamicNotchKit + set stage 1
+            chatViewModel.expansionStage = 1
+            Task {
                 await dynamicNotch.expand()
                 isExpanded = true
             }
+        case 1:
+            // Status mini → full chat: already expanded, just swap content
+            chatViewModel.expansionStage = 2
+        default:
+            // Full chat → compact
+            collapse()
         }
     }
 
     func collapse() {
+        // Staged collapse: content fades first (200ms), then notch shape compacts
+        chatViewModel.expansionStage = 0
         Task {
+            try? await Task.sleep(for: .milliseconds(200))
             await dynamicNotch.compact()
             isExpanded = false
         }
@@ -95,19 +114,24 @@ final class NotchOverlayController: NSObject {
         case .working:
             guard UserDefaults.standard.bool(forKey: "autoExpandOnActivity") else { return }
             autoCollapseTask?.cancel()
-            Task {
-                await dynamicNotch.expand()
-                isExpanded = true
+            if chatViewModel.expansionStage == 0 {
+                chatViewModel.expansionStage = 1
+                Task {
+                    await dynamicNotch.expand()
+                    isExpanded = true
+                }
             }
 
         case .complete:
-            // Hold expanded for 3 seconds, then compact
-            autoCollapseTask?.cancel()
-            autoCollapseTask = Task {
-                try? await Task.sleep(for: .seconds(3))
-                guard !Task.isCancelled else { return }
-                await dynamicNotch.compact()
-                isExpanded = false
+            // Only auto-collapse if we auto-expanded to status mini (stage 1).
+            // If the user manually opened full chat (stage 2), leave it alone.
+            if chatViewModel.expansionStage == 1 {
+                autoCollapseTask?.cancel()
+                autoCollapseTask = Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    guard !Task.isCancelled else { return }
+                    self.collapse()
+                }
             }
 
         default:
@@ -118,27 +142,38 @@ final class NotchOverlayController: NSObject {
     // MARK: - Click Monitors
 
     /// LOCAL monitor: sees clicks delivered to OUR app (i.e. clicks on the DynamicNotchKit panel).
-    /// This is the one that handles click-to-expand and click-notch-to-collapse.
     private func installLocalClickMonitor() {
         localClickMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown]
         ) { [weak self] event in
             guard let self = self else { return event }
 
-            if self.isExpanded {
-                // Check if click is in the notch/header region (top of panel) to collapse
+            let stage = self.chatViewModel.expansionStage
+
+            switch stage {
+            case 0:
+                // Compact: any click on our panel → show status mini
+                self.togglePanel()
+                return nil
+
+            case 1:
+                // Status mini: click anywhere → go to full chat
+                // (the onTapGesture on the view handles this too, but this catches edge cases)
+                self.togglePanel()
+                return nil
+
+            case 2:
+                // Full chat: click in notch area → collapse, otherwise pass through to chat UI
                 let clickLocation = NSEvent.mouseLocation
                 let notchRect = self.notchHitRect()
                 if notchRect.contains(clickLocation) {
                     self.collapse()
-                    return nil // consume
+                    return nil
                 }
-                // Otherwise let the event through to SwiftUI (chat, input, buttons)
                 return event
-            } else {
-                // Compact state: any click on our panel should expand
-                self.togglePanel()
-                return nil // consume
+
+            default:
+                return event
             }
         }
     }
@@ -149,7 +184,7 @@ final class NotchOverlayController: NSObject {
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
-            guard let self = self, self.isExpanded else { return }
+            guard let self = self, self.chatViewModel.expansionStage > 0 else { return }
             self.collapse()
         }
     }

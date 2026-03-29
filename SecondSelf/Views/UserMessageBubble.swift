@@ -2,32 +2,38 @@ import SwiftUI
 
 // MARK: - User Message Bubble
 
-/// Chat bubble for messages from the user.
-/// Dark gray background, no border, regular text, right-aligned.
+/// Chat bubble for user messages. Olive green background, right-aligned, white text.
+/// Matches Figma node 90:103.
 struct UserMessageBubble: View {
     let text: String
     let timestamp: Date
 
     var body: some View {
-        HStack {
-            Spacer(minLength: 60)
+        VStack(alignment: .trailing, spacing: 5) {
+            HStack(alignment: .bottom, spacing: 0) {
+                Spacer(minLength: 60)
 
-            VStack(alignment: .trailing, spacing: 4) {
                 Text(text)
-                    .font(.system(size: 13))
-                    .foregroundColor(Color.ssTextPrimary)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
                     .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 15)
+                            .fill(Color.ssUserOlive)
+                    )
 
-                Text(formattedTime)
-                    .font(.system(size: 10))
-                    .foregroundColor(Color.ssTextSecondary)
+                // Tail on the right
+                BubbleTail(isUser: true)
+                    .fill(Color.ssUserOlive)
+                    .frame(width: 15, height: 20)
+                    .offset(x: -4, y: -1)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.ssUserBubble)
-            )
+
+            Text(formattedTime)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Color.ssCream.opacity(0.6))
         }
     }
 

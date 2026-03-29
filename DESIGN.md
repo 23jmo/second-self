@@ -57,11 +57,18 @@
 
 ## Motion
 - **Approach:** Intentional, physical. Alcove-style.
-- **Spring:** `.spring(response: 0.35, dampingFraction: 0.7)` for panel transitions
 - **Character:** Organic, weight-based. Overshoot on arrival, settle with slight bounce.
+- **Panel spring:** `.ssPanelSpring` — `spring(response: 0.3, dampingFraction: 0.85)` — panel transitions, DynamicNotchKit conversion
+- **Content reveal:** `.ssContentReveal` — `spring(response: 0.25, dampingFraction: 0.88)` — status line, VNC thumbnail, chips
+- **Message entrance:** `.ssMessageEntrance` — `spring(response: 0.3, dampingFraction: 0.9)` — chat bubble fade-in
+- **Micro-interaction:** `.ssMicro` — `spring(response: 0.2, dampingFraction: 0.85)` — button press, focus glow, pill expand
+- **Character transition:** `.ssCharacterTransition` — `spring(response: 0.3, dampingFraction: 0.85)` — Twin state changes
+- **Glow pulse:** `.ssGlowPulse` — `easeInOut(duration: 2.5)` — VNC PiP working glow
+- **Scroll:** `.ssScrollSpring` — `spring(response: 0.3, dampingFraction: 0.9)` — auto-scroll to latest message
 - **Easing:** enter(ease-out) exit(ease-in) move(ease-in-out)
-- **Duration:** typewriter 20-60ms/char, glow pulse 2s ease-in-out (opacity 0.1→0.3)
+- **Duration:** typewriter 20-60ms/char (deferred), glow pulse 2s ease-in-out (opacity 0.1→0.3)
 - **Rule:** No linear easing. Ever.
+- **Rule:** All animations use named tokens from DesignTokens.swift. No hardcoded springs.
 
 ## Anti-Slop Rules
 - No gradient glows on flat surfaces

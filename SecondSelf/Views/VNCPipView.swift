@@ -12,6 +12,8 @@ struct VNCPipView: View {
     @StateObject private var streamer = MJPEGStreamer()
     @State private var isHovered: Bool = false
     @State private var expandedWindow: NSWindow?
+    @State private var glowPhase: Bool = false
+    @State private var livePhase: Bool = false
 
     private let thumbnailSize = CGSize(width: 140, height: 90)
 
@@ -39,7 +41,7 @@ struct VNCPipView: View {
             )
             .shadow(
                 color: twinState == .working
-                    ? Color.ssTwinGreen.opacity(0.3)
+                    ? Color.ssTwinGreen.opacity(glowPhase ? 0.3 : 0.1)
                     : Color.black.opacity(0.3),
                 radius: twinState == .working ? 8 : 4
             )
@@ -50,6 +52,7 @@ struct VNCPipView: View {
                     Circle()
                         .fill(Color.ssError)
                         .frame(width: 5, height: 5)
+                        .opacity(livePhase ? 1.0 : 0.4)
                     Text("LIVE")
                         .font(.system(size: 8, weight: .bold))
                         .foregroundColor(Color.ssTextPrimary)
@@ -63,8 +66,10 @@ struct VNCPipView: View {
                 .padding(6)
             }
         }
-        .scaleEffect(isHovered ? 1.05 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isHovered)
+        .scaleEffect(isHovered ? 1.02 : 1.0)
+        .animation(.ssMicro, value: isHovered)
+        .animation(.ssGlowPulse.repeatForever(autoreverses: true), value: glowPhase)
+        .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: livePhase)
         .onHover { hovering in
             isHovered = hovering
         }
@@ -73,6 +78,8 @@ struct VNCPipView: View {
         }
         .onAppear {
             streamer.start()
+            glowPhase = true
+            livePhase = true
         }
         .onDisappear {
             streamer.stop()

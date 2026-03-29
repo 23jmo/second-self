@@ -2,33 +2,34 @@ import SwiftUI
 
 // MARK: - Chat View
 
-/// Full chat interface with message list, VNC PiP, and input bar.
-/// Shown in the .fullChat panel state.
+/// Message list only. Input bar and VNC are handled by NotchViews.
 struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Message list
+        ZStack(alignment: .top) {
             ScrollViewReader { scrollProxy in
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(viewModel.messages) { message in
                             messageView(for: message)
                                 .id(message.id)
+                                .transition(transitionForMessage(message))
                         }
 
-                        // "Twin is working..." indicator
                         if viewModel.twinState == .thinking || viewModel.twinState == .working {
-                            TwinWorkingIndicator(state: viewModel.twinState)
+                            TwinWorkingIndicator()
                                 .id("working-indicator")
+                                .transition(.ssTwinMessage)
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 19)
+                    .padding(.top, 26)
+                    .padding(.bottom, 12)
+                    .animation(.ssMessageEntrance, value: viewModel.messages.count)
                 }
                 .onChange(of: viewModel.messages.count) { _ in
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    withAnimation(.ssScrollSpring) {
                         if let lastMessage = viewModel.messages.last {
                             scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
                         }
@@ -36,19 +37,20 @@ struct ChatView: View {
                 }
             }
 
-            // Input bar
-            ChatInputBar(
-                text: $viewModel.inputText,
-                isEnabled: viewModel.twinState != .thinking && viewModel.twinState != .working,
-                onSend: { text in
-                    viewModel.sendMessage(text: text)
-                }
-            )
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-            .padding(.top, 6)
+            // Solid black + fade covering the notch area so content can't peek through
+            VStack(spacing: 0) {
+                Color.black
+                    .frame(height: 16)
+
+                LinearGradient(
+                    colors: [.black, .black.opacity(0)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 8)
+            }
+            .allowsHitTesting(false)
         }
-        .background(Color.ssSurface)
     }
 
     @ViewBuilder
@@ -64,47 +66,47 @@ struct ChatView: View {
             ToolCallPill(tool: tool, args: args, result: result)
         }
     }
+
+    private func transitionForMessage(_ message: ChatMessage) -> AnyTransition {
+        switch message.content {
+        case .text:
+            return message.sender == .twin ? .ssTwinMessage : .ssUserMessage
+        case .toolCall:
+            return .ssToolPill
+        }
+    }
 }
 
 // MARK: - Twin Working Indicator
 
 struct TwinWorkingIndicator: View {
-    let state: TwinState
-
-    @State private var dotCount: Int = 1
-    private let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+    @State private var phase: Int = 0
 
     var body: some View {
         HStack {
-            HStack(spacing: 6) {
-                // Animated dots
-                ForEach(0..<3, id: \.self) { index in
-                    Circle()
-                        .fill(Color.ssTwinGreen)
-                        .frame(width: 5, height: 5)
-                        .opacity(index < dotCount ? 1.0 : 0.3)
+            TimelineView(.periodic(from: .now, by: 0.4)) { context in
+                HStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { index in
+                        Circle()
+                            .fill(Color.white.opacity(0.9))
+                            .frame(width: 8, height: 8)
+                            .scaleEffect(index == phase ? 1.15 : 1.0)
+                            .opacity(index == phase ? 1.0 : 0.5)
+                            .animation(.ssMicro, value: phase)
+                    }
                 }
-
-                Text(state == .thinking ? "Twin is thinking" : "Twin is working")
-                    .font(.system(size: 11))
-                    .italic()
-                    .foregroundColor(Color.ssTextSecondary)
+                .onChange(of: context.date) { _ in
+                    phase = (phase + 1) % 3
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             .background(
-                Capsule()
-                    .fill(Color.ssSurface)
-                    .overlay(
-                        Capsule()
-                            .stroke(Color.ssBorder, lineWidth: 0.5)
-                    )
+                RoundedRectangle(cornerRadius: 15)
+                    .fill(Color.ssTwinOlive)
             )
 
             Spacer()
-        }
-        .onReceive(timer) { _ in
-            dotCount = (dotCount % 3) + 1
         }
     }
 }

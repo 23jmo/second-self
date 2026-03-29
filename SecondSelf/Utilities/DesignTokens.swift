@@ -17,6 +17,12 @@ extension Color {
     static let ssSuccess       = Color(hex: 0x30D158)
     /// True black matching the hardware notch. Used for notch-connected surfaces.
     static let ssNotchBlack    = Color(hex: 0x000000)
+    // Figma chat colors
+    static let ssUserOlive     = Color(hex: 0x9CA161) // User message bubble
+    static let ssTwinOlive     = Color(hex: 0x3D3F1F) // Twin message bubble (darker)
+    static let ssCream         = Color(hex: 0xFBFFD4)  // Timestamps, tool call pill bg
+    static let ssToolBorder    = Color(hex: 0xAFB478)  // Tool call pill border
+    static let ssInputBg       = Color(hex: 0x333338)  // Input bar background (brighter for contrast)
 }
 
 extension NSColor {
@@ -38,12 +44,44 @@ extension Color {
 
 // MARK: - Motion Tokens
 // Spring animations from DESIGN.md. Used everywhere instead of ad-hoc timing.
+// Rule: No linear easing. Ever. No hardcoded springs.
 
 extension Animation {
-    /// Primary panel transition spring: Alcove-style with overshoot
-    static let ssPanelSpring = Animation.spring(response: 0.35, dampingFraction: 0.7)
-    /// Faster spring for content reveals (status line, VNC thumbnail)
-    static let ssContentReveal = Animation.spring(response: 0.25, dampingFraction: 0.8)
+    /// Primary panel transition spring: tight, minimal overshoot
+    static let ssPanelSpring = Animation.spring(response: 0.3, dampingFraction: 0.85)
+    /// Faster spring for content reveals (status line, VNC thumbnail, chips)
+    static let ssContentReveal = Animation.spring(response: 0.25, dampingFraction: 0.88)
+    /// Message entrance: gentle fade-in
+    static let ssMessageEntrance = Animation.spring(response: 0.3, dampingFraction: 0.9)
+    /// Micro-interactions: button press, focus glow, pill expand
+    static let ssMicro = Animation.spring(response: 0.2, dampingFraction: 0.85)
+    /// Character state transitions
+    static let ssCharacterTransition = Animation.spring(response: 0.3, dampingFraction: 0.85)
+    /// Glow pulse: slow, subtle
+    static let ssGlowPulse = Animation.easeInOut(duration: 2.5)
+    /// Scroll to latest message
+    static let ssScrollSpring = Animation.spring(response: 0.3, dampingFraction: 0.9)
+}
+
+// MARK: - Transition Tokens
+// Subtle: mostly opacity with minimal spatial movement
+
+extension AnyTransition {
+    /// Message from Twin: fade in + tiny scale
+    static let ssTwinMessage = AnyTransition.asymmetric(
+        insertion: .opacity.combined(with: .scale(scale: 0.97)),
+        removal: .opacity
+    )
+    /// Message from User: fade in + tiny scale
+    static let ssUserMessage = AnyTransition.asymmetric(
+        insertion: .opacity.combined(with: .scale(scale: 0.97)),
+        removal: .opacity
+    )
+    /// Tool call pill: fade in + slight scale
+    static let ssToolPill = AnyTransition.asymmetric(
+        insertion: .opacity.combined(with: .scale(scale: 0.92)),
+        removal: .opacity
+    )
 }
 
 enum SSEEventType: String {

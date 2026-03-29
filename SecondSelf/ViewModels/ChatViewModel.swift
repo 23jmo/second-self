@@ -11,6 +11,9 @@ final class ChatViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var inputText: String = ""
 
+    /// Tracks notch expansion: 0=compact, 1=status mini, 2=full chat
+    @Published var expansionStage: Int = 0
+
     /// Callback for notch tap-to-expand. Set by NotchOverlayController.
     var onNotchTap: (() -> Void)?
     /// Callback for closing expanded notch. Set by NotchOverlayController.
