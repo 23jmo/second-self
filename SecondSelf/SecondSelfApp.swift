@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         discoverEnvironment()
 
         // Launch orchestrator (runs in primary session, talks to LLM APIs)
+        // Agent server is NOT launched here — it runs in secondself's session
+        // via LaunchAgent (ai.secondself.agent) for correct screen capture.
         launchPython(script: "orchestrator/server.py", label: "Orchestrator")
 
         // Create the notch overlay

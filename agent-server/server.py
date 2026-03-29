@@ -18,6 +18,7 @@ PORT = 8421
 
 # Shared frame buffer: main thread captures, worker threads read
 _latest_frame = None
+_last_frame_time = 0.0
 _frame_lock = threading.Lock()
 
 
@@ -142,6 +143,7 @@ TOOLS = {
     "/browser/screenshot": lambda body: run_browser("screenshot"),
     "/browser/text": lambda body: run_browser("get", "text"),
     "/browser/press": lambda body: run_browser("keys", body["key"]),
+    "/browser/close": lambda body: run_browser("close"),
 }
 
 
@@ -150,10 +152,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             # Check browser-use CLI
             bu_check = run_browser("doctor", timeout=10)
+            with _frame_lock:
+                frame_age = time.time() - _last_frame_time if _last_frame_time > 0 else -1
             self._respond(200, {
                 "status": "ok",
                 "tools": list(TOOLS.keys()),
                 "browser_use": bu_check,
+                "stream_active": 0 < frame_age < 5.0,
+                "last_frame_age_s": round(frame_age, 1),
             })
         elif self.path == "/stream":
             self._stream_screen()
@@ -250,7 +256,8 @@ def main():
         raise
     print(f"[agent-server] Starting on port {PORT}")
 
-    # Verify browser-use CLI is available
+    # Clear any stale browser-use session, then verify CLI is available
+    run_browser("close", timeout=5)
     bu_check = run_browser("doctor", timeout=10)
     if bu_check.get("status") == "error":
         print(f"[agent-server] WARNING: browser-use not available: {bu_check.get('error', bu_check.get('stderr', 'unknown'))}")
@@ -294,9 +301,10 @@ def main():
 
                 jpeg_buf.seek(0)
                 jpeg_buf.truncate()
-                img.save(jpeg_buf, format="JPEG", quality=60)
+                img.save(jpeg_buf, format="JPEG", quality=70)
                 with _frame_lock:
                     _latest_frame = jpeg_buf.getvalue()
+                    _last_frame_time = time.time()
             except Exception as e:
                 print(f"[agent-server] Screenshot error: {e}")
                 time.sleep(0.5)

@@ -142,9 +142,14 @@ async def onboard(body: OnboardRequest, session_id: str = Cookie(default=None)):
     )
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, deprecated=True)
 async def chat(body: ChatRequest):
-    """Chat with the digital twin using the rich memory profile."""
+    """DEPRECATED: Use the orchestrator at port 8420/chat instead.
+
+    The orchestrator now handles all chat with SSE streaming, desktop tools,
+    productivity tools, and generative UI. This endpoint is kept for backward
+    compatibility only.
+    """
     uid = get_uid_for_session(body.session_id)
 
     # Try rich profile first, fall back to slim

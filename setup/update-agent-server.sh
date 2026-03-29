@@ -9,8 +9,7 @@ SECOND_USER="secondself"
 
 echo "[update] Copying agent-server code to secondself..."
 sudo cp "$REPO_DIR/agent-server/server.py" "$SECOND_HOME/second-self/agent-server/server.py"
-sudo cp "$REPO_DIR/agent-server/screenshot.py" "$SECOND_HOME/second-self/agent-server/screenshot.py"
-sudo chown "$SECOND_USER:staff" "$SECOND_HOME/second-self/agent-server/server.py" "$SECOND_HOME/second-self/agent-server/screenshot.py"
+sudo chown "$SECOND_USER:staff" "$SECOND_HOME/second-self/agent-server/server.py"
 
 echo "[update] Restarting agent-server in secondself's session..."
 SECOND_UID=$(id -u "$SECOND_USER")
