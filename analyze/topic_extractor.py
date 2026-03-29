@@ -8,11 +8,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+import anthropic
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_PATH = Path("output/topics.json")
+_DEFAULT_MODEL = "claude-sonnet-4-20250514"
 _MAX_LLM_TOKENS = 1200
 _MAX_SAMPLE_PER_GROUP = 100
 _SNIPPET_CHAR_LIMIT = 300
@@ -22,15 +24,37 @@ _SNIPPET_CHAR_LIMIT = 300
 # LLM helper
 # ---------------------------------------------------------------------------
 
-def _call_gemini(prompt: str, text_block: str) -> dict[str, Any]:
-    """Send a prompt + text block to Gemini and parse JSON response."""
+def _call_claude(prompt: str, text_block: str) -> dict[str, Any]:
+    """Send a prompt + text block to Claude and parse JSON response."""
     load_dotenv()
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from src.synthesis.gemini_client import call_gemini_json
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise EnvironmentError("ANTHROPIC_API_KEY must be set in .env")
+    model = os.environ.get("CLAUDE_MODEL", _DEFAULT_MODEL)
 
+    client = anthropic.Anthropic(api_key=api_key)
     full_prompt = f"{prompt}\n\n---\n\n{text_block}"
-    return call_gemini_json(full_prompt, max_tokens=_MAX_LLM_TOKENS)
+
+    temperatures = [0, 0.3]
+    for attempt, temp in enumerate(temperatures):
+        response = client.messages.create(
+            model=model,
+            max_tokens=_MAX_LLM_TOKENS,
+            temperature=temp,
+            messages=[{"role": "user", "content": full_prompt}],
+        )
+        raw_text = response.content[0].text.strip()
+        if raw_text.startswith("```"):
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+            raw_text = re.sub(r"\s*```$", "", raw_text)
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            if attempt == 0:
+                logger.warning("LLM returned non-JSON (temp=0), retrying. Raw: %.200s", raw_text)
+            else:
+                logger.error("LLM returned non-JSON after retry. Raw: %.200s", raw_text)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +179,7 @@ def extract_topics(emails: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 min(len(inbox), _MAX_SAMPLE_PER_GROUP))
 
     snippets = _build_snippets(sampled)
-    result = _call_gemini(_PROMPT, snippets)
+    result = _call_claude(_PROMPT, snippets)
 
     raw_topics = result.get("topics", [])
     if not isinstance(raw_topics, list):

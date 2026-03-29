@@ -171,7 +171,7 @@ def test_build_preferences_with_llm(tmp_path: Path) -> None:
     with patch.object(pb, "OUTPUT_PATH", out_path), \
          patch.object(pb, "SECONDSELF_PATH", secondself_path), \
          patch("build.preferences_builder.load_dotenv"), \
-         patch("build.preferences_builder._call_gemini", return_value=_SAMPLE_PREFS):
+         patch("build.preferences_builder._call_claude", return_value=_SAMPLE_PREFS):
         md = pb.build_preferences(
             behavior={"active_hours": [10], "active_days": ["Monday"]},
             relationships={"inner_circle": [{"email": "a@b.com", "address_style": "Hi"}]},
@@ -191,7 +191,7 @@ def test_build_preferences_empty_llm_response(tmp_path: Path) -> None:
     with patch.object(pb, "OUTPUT_PATH", out_path), \
          patch.object(pb, "SECONDSELF_PATH", secondself_path), \
          patch("build.preferences_builder.load_dotenv"), \
-         patch("build.preferences_builder._call_gemini", return_value={}):
+         patch("build.preferences_builder._call_claude", return_value={}):
         md = pb.build_preferences(
             behavior={},
             relationships={},
@@ -219,6 +219,6 @@ def test_build_preferences_loads_from_files(tmp_path: Path) -> None:
              "calendar_count": 0,
              "topics": [],
          }), \
-         patch("build.preferences_builder._call_gemini", return_value=_SAMPLE_PREFS):
+         patch("build.preferences_builder._call_claude", return_value=_SAMPLE_PREFS):
         md = pb.build_preferences()
     assert "# Preferences" in md
