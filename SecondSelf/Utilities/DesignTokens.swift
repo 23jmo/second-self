@@ -15,12 +15,35 @@ extension Color {
     static let ssTwinGreen     = Color(hex: 0xB5B055)
     static let ssError         = Color(hex: 0xFF453A)
     static let ssSuccess       = Color(hex: 0x30D158)
+    /// True black matching the hardware notch. Used for notch-connected surfaces.
+    static let ssNotchBlack    = Color(hex: 0x000000)
 }
 
 extension NSColor {
     static let ssTwinGreen   = NSColor(red: 0.71, green: 0.69, blue: 0.33, alpha: 1.0)
     static let ssBackground  = NSColor(red: 0.051, green: 0.051, blue: 0.059, alpha: 1.0)
     static let ssSurface     = NSColor(red: 0.11, green: 0.11, blue: 0.118, alpha: 1.0)
+}
+
+// MARK: - Color Hex Extension
+
+extension Color {
+    init(hex: UInt32, opacity: Double = 1.0) {
+        let red = Double((hex >> 16) & 0xFF) / 255.0
+        let green = Double((hex >> 8) & 0xFF) / 255.0
+        let blue = Double(hex & 0xFF) / 255.0
+        self.init(.sRGB, red: red, green: green, blue: blue, opacity: opacity)
+    }
+}
+
+// MARK: - Motion Tokens
+// Spring animations from DESIGN.md. Used everywhere instead of ad-hoc timing.
+
+extension Animation {
+    /// Primary panel transition spring: Alcove-style with overshoot
+    static let ssPanelSpring = Animation.spring(response: 0.35, dampingFraction: 0.7)
+    /// Faster spring for content reveals (status line, VNC thumbnail)
+    static let ssContentReveal = Animation.spring(response: 0.25, dampingFraction: 0.8)
 }
 
 enum SSEEventType: String {

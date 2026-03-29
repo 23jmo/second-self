@@ -11,6 +11,11 @@ final class ChatViewModel: ObservableObject {
     @Published var isConnected: Bool = false
     @Published var inputText: String = ""
 
+    /// Callback for notch tap-to-expand. Set by NotchOverlayController.
+    var onNotchTap: (() -> Void)?
+    /// Callback for closing expanded notch. Set by NotchOverlayController.
+    var onNotchClose: (() -> Void)?
+
     private let orchestratorURL = URL(string: ServerConfig.chatEndpoint)!
     private var sseTask: URLSessionDataTask?
     private var reconnectTimer: Timer?

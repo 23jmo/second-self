@@ -8,52 +8,45 @@ struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            VStack(spacing: 0) {
-                // Message list
-                ScrollViewReader { scrollProxy in
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(viewModel.messages) { message in
-                                messageView(for: message)
-                                    .id(message.id)
-                            }
-
-                            // "Twin is working..." indicator
-                            if viewModel.twinState == .thinking || viewModel.twinState == .working {
-                                TwinWorkingIndicator(state: viewModel.twinState)
-                                    .id("working-indicator")
-                            }
+        VStack(spacing: 0) {
+            // Message list
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.messages) { message in
+                            messageView(for: message)
+                                .id(message.id)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+
+                        // "Twin is working..." indicator
+                        if viewModel.twinState == .thinking || viewModel.twinState == .working {
+                            TwinWorkingIndicator(state: viewModel.twinState)
+                                .id("working-indicator")
+                        }
                     }
-                    .onChange(of: viewModel.messages.count) { _ in
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            if let lastMessage = viewModel.messages.last {
-                                scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .onChange(of: viewModel.messages.count) { _ in
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        if let lastMessage = viewModel.messages.last {
+                            scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
                         }
                     }
                 }
-
-                // Input bar
-                ChatInputBar(
-                    text: $viewModel.inputText,
-                    isEnabled: viewModel.twinState != .thinking && viewModel.twinState != .working,
-                    onSend: { text in
-                        viewModel.sendMessage(text: text)
-                    }
-                )
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
-                .padding(.top, 6)
             }
 
-            // VNC PiP thumbnail in bottom-right
-            VNCPipView(twinState: viewModel.twinState)
-                .padding(.trailing, 16)
-                .padding(.bottom, 72) // Above the input bar
+            // Input bar
+            ChatInputBar(
+                text: $viewModel.inputText,
+                isEnabled: viewModel.twinState != .thinking && viewModel.twinState != .working,
+                onSend: { text in
+                    viewModel.sendMessage(text: text)
+                }
+            )
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+            .padding(.top, 6)
         }
         .background(Color.ssSurface)
     }

@@ -5,16 +5,20 @@ import PackageDescription
 let package = Package(
     name: "SecondSelf",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
+    ],
+    dependencies: [
+        .package(url: "https://github.com/MrKai77/DynamicNotchKit", branch: "main")
     ],
     targets: [
         .executableTarget(
             name: "SecondSelf",
+            dependencies: ["DynamicNotchKit"],
             path: ".",
-            exclude: ["Info.plist", "Package.swift"],
+            exclude: ["Info.plist", "Package.swift", "Tests"],
             resources: [
                 .process("Assets.xcassets")
             ]
-        )
+        ),
     ]
 )

@@ -10,7 +10,6 @@ struct SecondSelfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // We use a custom NSPanel for the overlay, so no SwiftUI window is needed.
         Settings {
             EmptyView()
         }
@@ -30,12 +29,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
+        // Register default settings
+        UserDefaults.standard.register(defaults: [
+            "autoExpandOnActivity": true
+        ])
+
         // Discover repo root, python, and env vars once
         discoverEnvironment()
 
         // Launch orchestrator (runs in primary session, talks to LLM APIs)
-        // Agent-server is NOT launched here — it runs in secondself's session
-        // via LaunchAgent (setup/provision.sh installs it)
         launchPython(script: "orchestrator/server.py", label: "Orchestrator")
 
         // Create the notch overlay
@@ -66,7 +68,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Environment Discovery
 
     private func discoverEnvironment() {
-        // Find repo root by walking up from the executable
         let execURL = Bundle.main.executableURL ?? URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
         var root = execURL.deletingLastPathComponent()
         for _ in 0..<10 {
@@ -77,7 +78,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         repoRoot = root
 
-        // Load .env
         envVars = ProcessInfo.processInfo.environment
         let envPath = root.appendingPathComponent(".env")
         if let contents = try? String(contentsOf: envPath, encoding: .utf8) {
@@ -91,7 +91,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Find python3
         let home = envVars["HOME"] ?? NSHomeDirectory()
         let candidates = [
             "\(home)/.pyenv/versions/3.11.8/bin/python3",
@@ -131,10 +130,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleGlobalKeyEvent(_ event: NSEvent) {
+        // Cmd+Shift+T: toggle panel
         let requiredFlags: NSEvent.ModifierFlags = [.command, .shift]
         let keyT: UInt16 = 17
         if event.modifierFlags.contains(requiredFlags) && event.keyCode == keyT {
-            overlayController?.togglePanel()
+            Task { @MainActor in
+                overlayController?.togglePanel()
+            }
+            return
+        }
+
+        // Escape: collapse to compact
+        let keyEscape: UInt16 = 53
+        if event.keyCode == keyEscape {
+            Task { @MainActor in
+                overlayController?.collapse()
+            }
         }
     }
 }

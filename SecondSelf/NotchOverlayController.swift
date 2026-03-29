@@ -1,344 +1,212 @@
 import SwiftUI
 import AppKit
-
-// MARK: - Panel State
-
-enum PanelState {
-    case collapsed   // Twin head peek below notch (~60x40)
-    case expanded    // Twin body + status line (~300x120)
-    case fullChat    // Full chat interface (~420x560)
-
-    var size: CGSize {
-        switch self {
-        case .collapsed: return CGSize(width: 60, height: 40)
-        case .expanded:  return CGSize(width: 300, height: 120)
-        case .fullChat:  return CGSize(width: 420, height: 560)
-        }
-    }
-}
-
-// MARK: - Transparent NSPanel Subclass
-
-final class OverlayPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-
-    override init(
-        contentRect: NSRect,
-        styleMask style: NSWindow.StyleMask,
-        backing backingStoreType: NSWindow.BackingStoreType,
-        defer flag: Bool
-    ) {
-        super.init(
-            contentRect: contentRect,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-
-        // Float above everything, including the menu bar
-        level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        isMovableByWindowBackground = false
-
-        // Don't steal focus from other apps
-        hidesOnDeactivate = false
-    }
-}
+import Combine
+import DynamicNotchKit
 
 // MARK: - Notch Overlay Controller
 
-final class NotchOverlayController: NSObject, NSWindowDelegate {
-    private var panel: OverlayPanel!
-    private var chatViewModel: ChatViewModel
-    private(set) var panelState: PanelState = .collapsed
+/// Manages the DynamicNotchKit-powered notch overlay.
+/// Handles auto-expand on Twin activity and hotkey toggling.
+@MainActor
+final class NotchOverlayController: NSObject {
+    private(set) var chatViewModel: ChatViewModel
+    private var dynamicNotch: DynamicNotch<ExpandedNotchContent, CompactLeadingContent, CompactTrailingContent>
 
-    // Click-outside monitor
-    private var clickOutsideMonitor: Any?
+    // Auto-expand / auto-collapse
+    private var twinStateCancellable: AnyCancellable?
+    private var autoCollapseTask: Task<Void, Never>?
+
+    // Local monitor: clicks ON our panel (expand/collapse)
+    // Global monitor: clicks on OTHER apps' windows (dismiss when expanded)
+    private var localClickMonitor: Any?
+    private var globalClickMonitor: Any?
+
+    // Track current state for toggle
+    private var isExpanded = false
 
     override init() {
-        self.chatViewModel = ChatViewModel()
-        super.init()
-        setupPanel()
-        positionPanel()
-        panel.orderFrontRegardless()
-        installClickOutsideMonitor()
-    }
+        let viewModel = ChatViewModel()
+        self.chatViewModel = viewModel
 
-    // MARK: - Panel Setup
-
-    private func setupPanel() {
-        let initialSize = PanelState.collapsed.size
-        let frame = NSRect(origin: .zero, size: initialSize)
-
-        panel = OverlayPanel(
-            contentRect: frame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.delegate = self
-
-        updatePanelContent()
-    }
-
-    private func updatePanelContent() {
-        let hostingView = NSHostingView(
-            rootView: NotchOverlayView(
-                panelState: panelState,
-                chatViewModel: chatViewModel,
-                onCollapsedTap: { [weak self] in self?.transitionTo(.expanded) },
-                onExpandedTap: { [weak self] in self?.transitionTo(.fullChat) },
-                onClose: { [weak self] in self?.transitionTo(.collapsed) }
-            )
-        )
-        hostingView.frame = NSRect(origin: .zero, size: panelState.size)
-        panel.contentView = hostingView
-    }
-
-    // MARK: - Positioning
-
-    /// Compute the panel frame for a given state, anchored below the notch/menu bar
-    private func frameForState(_ state: PanelState) -> NSRect {
-        guard let screen = NSScreen.main else { return .zero }
-        let screenFrame = screen.frame
-        let visibleFrame = screen.visibleFrame
-        let menuBarHeight = screenFrame.maxY - visibleFrame.maxY
-        let size = state.size
-        let originX = screenFrame.midX - size.width / 2
-        let originY = screenFrame.maxY - menuBarHeight - size.height
-        return NSRect(x: originX, y: originY, width: size.width, height: size.height)
-    }
-
-    private func positionPanel() {
-        panel.setFrame(frameForState(panelState), display: true)
-    }
-
-    // MARK: - State Transitions
-
-    func transitionTo(_ newState: PanelState) {
-        guard newState != panelState else { return }
-        panelState = newState
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.35
-            context.timingFunction = CAMediaTimingFunction(
-                controlPoints: 0.34, 1.56, 0.64, 1.0 // spring-like overshoot
-            )
-            context.allowsImplicitAnimation = true
-            panel.animator().setFrame(frameForState(newState), display: true)
+        self.dynamicNotch = DynamicNotch(
+            hoverBehavior: [.keepVisible, .hapticFeedback],
+            style: .auto
+        ) {
+            ExpandedNotchContent(chatViewModel: viewModel)
+        } compactLeading: {
+            CompactLeadingContent(chatViewModel: viewModel)
+        } compactTrailing: {
+            CompactTrailingContent(chatViewModel: viewModel)
         }
 
-        updatePanelContent()
+        super.init()
+
+        // Wire tap callbacks through the shared view model
+        viewModel.onNotchTap = { [weak self] in
+            self?.togglePanel()
+        }
+        viewModel.onNotchClose = { [weak self] in
+            self?.collapse()
+        }
+
+        // Show compact state on launch (Twin visible beside notch)
+        Task {
+            await dynamicNotch.compact()
+        }
+
+        installTwinStateObserver()
+        installLocalClickMonitor()
+        installGlobalClickMonitor()
     }
+
+    // MARK: - Toggle (for hotkey)
 
     func togglePanel() {
-        switch panelState {
-        case .collapsed:
-            transitionTo(.expanded)
-        case .expanded, .fullChat:
-            transitionTo(.collapsed)
+        Task {
+            if isExpanded {
+                await dynamicNotch.compact()
+                isExpanded = false
+            } else {
+                await dynamicNotch.expand()
+                isExpanded = true
+            }
         }
     }
 
-    // MARK: - Click Outside
+    func collapse() {
+        Task {
+            await dynamicNotch.compact()
+            isExpanded = false
+        }
+    }
 
-    private func installClickOutsideMonitor() {
-        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown]
-        ) { [weak self] event in
-            guard let self = self, self.panelState != .collapsed else { return }
+    // MARK: - Auto-Expand on Twin Activity
 
-            // Check if the click is outside our panel
-            let clickLocation = NSEvent.mouseLocation
-            if !self.panel.frame.contains(clickLocation) {
-                self.transitionTo(.collapsed)
+    private func installTwinStateObserver() {
+        twinStateCancellable = chatViewModel.$twinState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newState in
+                self?.handleTwinStateChange(newState)
             }
+    }
+
+    private func handleTwinStateChange(_ twinState: TwinState) {
+        switch twinState {
+        case .working:
+            guard UserDefaults.standard.bool(forKey: "autoExpandOnActivity") else { return }
+            autoCollapseTask?.cancel()
+            Task {
+                await dynamicNotch.expand()
+                isExpanded = true
+            }
+
+        case .complete:
+            // Hold expanded for 3 seconds, then compact
+            autoCollapseTask?.cancel()
+            autoCollapseTask = Task {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                await dynamicNotch.compact()
+                isExpanded = false
+            }
+
+        default:
+            break
+        }
+    }
+
+    // MARK: - Click Monitors
+
+    /// LOCAL monitor: sees clicks delivered to OUR app (i.e. clicks on the DynamicNotchKit panel).
+    /// This is the one that handles click-to-expand and click-notch-to-collapse.
+    private func installLocalClickMonitor() {
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown]
+        ) { [weak self] event in
+            guard let self = self else { return event }
+
+            if self.isExpanded {
+                // Check if click is in the notch/header region (top of panel) to collapse
+                let clickLocation = NSEvent.mouseLocation
+                let notchRect = self.notchHitRect()
+                if notchRect.contains(clickLocation) {
+                    self.collapse()
+                    return nil // consume
+                }
+                // Otherwise let the event through to SwiftUI (chat, input, buttons)
+                return event
+            } else {
+                // Compact state: any click on our panel should expand
+                self.togglePanel()
+                return nil // consume
+            }
+        }
+    }
+
+    /// GLOBAL monitor: sees clicks delivered to OTHER apps.
+    /// Used only for click-outside dismiss when expanded.
+    private func installGlobalClickMonitor() {
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            guard let self = self, self.isExpanded else { return }
+            self.collapse()
+        }
+    }
+
+    /// The notch hit rect: the physical notch area + padding for compact content.
+    private func notchHitRect() -> NSRect {
+        guard let screen = NSScreen.main else { return .zero }
+        let base = Self.screenNotchFrame(screen)
+        // Pad to include compact leading/trailing content flanking the notch
+        return base.insetBy(dx: -40, dy: -4)
+    }
+
+    /// The expanded content hit rect: notch area extended downward by the content height.
+    private func expandedHitRect() -> NSRect {
+        guard let screen = NSScreen.main else { return .zero }
+        let notch = Self.screenNotchFrame(screen)
+        let expandedWidth: CGFloat = 420
+        let expandedHeight: CGFloat = 520
+
+        return NSRect(
+            x: notch.midX - expandedWidth / 2,
+            y: notch.minY - expandedHeight + notch.height,
+            width: expandedWidth,
+            height: expandedHeight
+        )
+    }
+
+    /// Compute the notch frame using the same logic as DynamicNotchKit:
+    /// auxiliaryTopLeftArea + auxiliaryTopRightArea for width, safeAreaInsets.top for height.
+    /// Falls back to a centered menu bar rect on non-notch screens.
+    private static func screenNotchFrame(_ screen: NSScreen) -> NSRect {
+        if let leftWidth = screen.auxiliaryTopLeftArea?.width,
+           let rightWidth = screen.auxiliaryTopRightArea?.width {
+            let notchHeight = screen.safeAreaInsets.top
+            let notchWidth = screen.frame.width - leftWidth - rightWidth
+            return NSRect(
+                x: screen.frame.midX - notchWidth / 2,
+                y: screen.frame.maxY - notchHeight,
+                width: notchWidth,
+                height: notchHeight
+            )
+        } else {
+            // Non-notch fallback: centered 300pt rect at top of screen
+            let menuBarHeight = screen.frame.maxY - screen.visibleFrame.maxY
+            return NSRect(
+                x: screen.frame.midX - 150,
+                y: screen.frame.maxY - menuBarHeight,
+                width: 300,
+                height: menuBarHeight
+            )
         }
     }
 
     deinit {
-        if let monitor = clickOutsideMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
-    }
-}
-
-// MARK: - Root SwiftUI Overlay View
-
-struct NotchOverlayView: View {
-    let panelState: PanelState
-    @ObservedObject var chatViewModel: ChatViewModel
-    let onCollapsedTap: () -> Void
-    let onExpandedTap: () -> Void
-    let onClose: () -> Void
-
-    var body: some View {
-        ZStack {
-            switch panelState {
-            case .collapsed:
-                CollapsedView(onTap: onCollapsedTap)
-            case .expanded:
-                ExpandedView(
-                    twinState: chatViewModel.twinState,
-                    isConnected: chatViewModel.isConnected,
-                    onTap: onExpandedTap
-                )
-            case .fullChat:
-                FullChatView(
-                    chatViewModel: chatViewModel,
-                    onClose: onClose
-                )
-            }
-        }
-        .frame(
-            width: panelState.size.width,
-            height: panelState.size.height
-        )
-    }
-}
-
-// MARK: - Collapsed View (Twin Head Peek)
-
-struct CollapsedView: View {
-    let onTap: () -> Void
-
-    var body: some View {
-        ZStack {
-            // Small olive-green circle as the Twin head
-            Circle()
-                .fill(Color(nsColor: NSColor(red: 0.71, green: 0.69, blue: 0.33, alpha: 1.0)))
-                .frame(width: 24, height: 24)
-                .shadow(color: Color(nsColor: NSColor(red: 0.71, green: 0.69, blue: 0.33, alpha: 0.3)), radius: 6)
-        }
-        .frame(width: 60, height: 40)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
-        .accessibilityLabel("Second Self Twin - click to expand")
-    }
-}
-
-// MARK: - Expanded View (Twin Body + Status)
-
-struct ExpandedView: View {
-    let twinState: TwinState
-    let isConnected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 12) {
-                TwinCharacterView(twinState: twinState, compact: true)
-                    .frame(width: 48, height: 48)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Second Self")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(Color.ssTextPrimary)
-
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(isConnected ? Color.ssSuccess : Color.ssError)
-                            .frame(width: 6, height: 6)
-                        Text(statusText)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color.ssTextSecondary)
-                    }
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-        }
-        .frame(width: 300, height: 120)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.ssSurface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.ssBorder, lineWidth: 0.5)
-                )
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
-    }
-
-    private var statusText: String {
-        if !isConnected { return "Connecting to Twin..." }
-        switch twinState {
-        case .idle:      return "Ready"
-        case .thinking:  return "Thinking..."
-        case .working:   return "Working..."
-        case .complete:  return "Done"
-        case .error:     return "Error"
-        }
-    }
-}
-
-// MARK: - Full Chat View (Wrapper)
-
-struct FullChatView: View {
-    @ObservedObject var chatViewModel: ChatViewModel
-    let onClose: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header bar
-            HStack {
-                TwinCharacterView(twinState: chatViewModel.twinState, compact: true)
-                    .frame(width: 32, height: 32)
-
-                Text("Second Self")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color.ssTextPrimary)
-
-                Spacer()
-
-                // Connection status dot
-                Circle()
-                    .fill(chatViewModel.isConnected ? Color.ssSuccess : Color.ssError)
-                    .frame(width: 6, height: 6)
-
-                // Close button
-                Button(action: onClose) {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Color.ssTextSecondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color.ssBackground)
-
-            Divider()
-                .background(Color.ssBorder)
-
-            // Chat messages + input
-            ChatView(viewModel: chatViewModel)
-        }
-        .frame(width: 420, height: 560)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.ssSurface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.ssBorder, lineWidth: 0.5)
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-}
-
-// MARK: - Color Hex Extension
-
-extension Color {
-    init(hex: UInt32, opacity: Double = 1.0) {
-        let red = Double((hex >> 16) & 0xFF) / 255.0
-        let green = Double((hex >> 8) & 0xFF) / 255.0
-        let blue = Double(hex & 0xFF) / 255.0
-        self.init(.sRGB, red: red, green: green, blue: blue, opacity: opacity)
+        twinStateCancellable?.cancel()
+        autoCollapseTask?.cancel()
+        if let m = localClickMonitor { NSEvent.removeMonitor(m) }
+        if let m = globalClickMonitor { NSEvent.removeMonitor(m) }
     }
 }
