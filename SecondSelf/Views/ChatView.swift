@@ -64,6 +64,8 @@ struct ChatView: View {
             }
         case .toolCall(let tool, let args, let result):
             ToolCallPill(tool: tool, args: args, result: result)
+        case .component(let payload):
+            A2UIRenderer(payload: payload, isStreaming: false, onAction: { _, _ in })
         }
     }
 
@@ -72,6 +74,8 @@ struct ChatView: View {
         case .text:
             return message.sender == .twin ? .ssTwinMessage : .ssUserMessage
         case .toolCall:
+            return .ssToolPill
+        case .component:
             return .ssToolPill
         }
     }
