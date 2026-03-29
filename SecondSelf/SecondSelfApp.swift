@@ -40,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Launch orchestrator (runs in primary session, talks to LLM APIs)
         launchPython(script: "orchestrator/server.py", label: "Orchestrator")
 
+        // Launch agent server (desktop automation + MJPEG stream on port 8421)
+        launchPython(script: "agent-server/server.py", label: "Agent Server")
+
         // Create the notch overlay
         overlayController = NotchOverlayController()
 
