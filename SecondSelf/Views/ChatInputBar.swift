@@ -17,60 +17,38 @@ struct ChatInputBar: View {
     let onPermissionTap: () -> Void
 
     @FocusState private var isFocused: Bool
+    @State private var recordingPulseOpacity: Double = 0.0
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Recording overlay (shown above input bar when recording)
+        VStack(spacing: 6) {
+            // Recording indicator (slides in above input bar)
             if voiceState == .recording {
-                recordingOverlay
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                recordingIndicator
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)),
+                        removal: .opacity
+                    ))
+            }
+
+            // Error toast
+            if case .error(let message) = voiceState {
+                errorToast(message)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .bottom)),
+                        removal: .opacity
+                    ))
+            }
+
+            // Transcribing indicator
+            if voiceState == .transcribing {
+                transcribingIndicator
+                    .transition(.opacity)
             }
 
             // Main input bar
-            HStack(spacing: 8) {
-                TextField("Message your Twin...", text: $text)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .foregroundColor(Color.ssTextPrimary)
-                    .focused($isFocused)
-                    .onSubmit { sendIfValid() }
-                    .disabled(!isEnabled)
-                    .opacity(voiceState == .recording ? 0.3 : 1.0)
-
-                // Mic button: independent of isEnabled, RIGHT of text field
-                VoiceInputButton(
-                    voiceState: voiceState,
-                    onHoldStart: onHoldStart,
-                    onHoldEnd: onHoldEnd,
-                    onCancel: onVoiceCancel,
-                    onPermissionTap: onPermissionTap
-                )
-
-                // Send button
-                Button(action: sendIfValid) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundColor(canSend ? Color.ssUserOlive : Color.ssUserOlive.opacity(0.3))
-                        .scaleEffect(canSend ? 1.0 : 0.95)
-                        .animation(.ssMicro, value: canSend)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-            }
-            .padding(.leading, 16)
-            .padding(.trailing, 6)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 15)
-                    .fill(Color.ssInputBg)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 15)
-                    .stroke(isFocused ? Color.ssTwinGreen.opacity(0.4) : Color.clear, lineWidth: 1)
-            )
-            .animation(.ssMicro, value: isFocused)
+            mainInputBar
         }
-        .animation(.ssContentReveal, value: voiceState == .recording)
+        .animation(.ssContentReveal, value: voiceState)
         .onAppear {
             // Delay focus request so the panel animation settles
             // and the view is fully in the responder chain
@@ -80,47 +58,159 @@ struct ChatInputBar: View {
         }
     }
 
-    // MARK: - Recording Overlay
+    // MARK: - Main Input Bar
 
-    private var recordingOverlay: some View {
+    private var mainInputBar: some View {
         HStack(spacing: 8) {
+            TextField("Message your Twin...", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundColor(Color.ssTextPrimary)
+                .focused($isFocused)
+                .onSubmit { sendIfValid() }
+                .disabled(!isEnabled)
+
+            // Mic button: independent of isEnabled
+            VoiceInputButton(
+                voiceState: voiceState,
+                onHoldStart: onHoldStart,
+                onHoldEnd: onHoldEnd,
+                onCancel: onVoiceCancel,
+                onPermissionTap: onPermissionTap
+            )
+
+            // Send button
+            Button(action: sendIfValid) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(canSend ? Color.ssUserOlive : Color.ssUserOlive.opacity(0.3))
+                    .scaleEffect(canSend ? 1.0 : 0.95)
+                    .animation(.ssMicro, value: canSend)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 15)
+                .fill(voiceState == .recording ? Color.ssRecordingRed.opacity(0.08) : Color.ssInputBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 15)
+                .stroke(borderColor, lineWidth: 1)
+        )
+        .animation(.ssMicro, value: isFocused)
+        .animation(.ssMicro, value: voiceState == .recording)
+    }
+
+    private var borderColor: Color {
+        if voiceState == .recording {
+            return Color.ssRecordingRed.opacity(0.4)
+        }
+        if isFocused {
+            return Color.ssTwinGreen.opacity(0.4)
+        }
+        return Color.clear
+    }
+
+    // MARK: - Recording Indicator
+
+    private var recordingIndicator: some View {
+        HStack(spacing: 8) {
+            // Pulsing red dot
             Circle()
                 .fill(Color.ssRecordingRed)
-                .frame(width: 8, height: 8)
+                .frame(width: 7, height: 7)
+                .opacity(recordingPulseOpacity)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
+                        recordingPulseOpacity = 1.0
+                    }
+                }
+                .onDisappear { recordingPulseOpacity = 0.0 }
 
-            Text("Recording...")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Color.ssTextPrimary)
+            Text("Listening")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color.ssRecordingRed)
+                .tracking(0.3)
 
             Text(formattedDuration)
-                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
                 .foregroundColor(Color.ssTextSecondary)
 
             Spacer()
 
+            // Cancel button
             Button(action: onVoiceCancel) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 16))
-                    .foregroundColor(Color.ssTextSecondary)
+                HStack(spacing: 3) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                    Text("Cancel")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundColor(Color.ssTextSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule().fill(Color.ssUserBubble)
+                )
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.ssRecordingRed.opacity(0.15))
-        )
-        .padding(.bottom, 6)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
     }
+
+    // MARK: - Transcribing Indicator
+
+    private var transcribingIndicator: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.mini)
+                .tint(Color.ssUserOlive)
+
+            Text("Transcribing...")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color.ssTextSecondary)
+
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Error Toast
+
+    private func errorToast(_ message: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundColor(Color.ssError)
+
+            Text(message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Color.ssError.opacity(0.9))
+                .lineLimit(1)
+
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.ssError.opacity(0.1))
+        )
+    }
+
+    // MARK: - Helpers
 
     private var formattedDuration: String {
         let minutes = Int(recordingDuration) / 60
         let seconds = Int(recordingDuration) % 60
         return String(format: "%d:%02d", minutes, seconds)
     }
-
-    // MARK: - Send Logic
 
     private var canSend: Bool {
         isEnabled && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

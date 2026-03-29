@@ -14,11 +14,11 @@ struct VoiceInputButton: View {
 
     @State private var isPressing = false
     @State private var pressStartTime: Date?
+    @State private var pulseScale: CGFloat = 1.0
     @State private var shakeOffset: CGFloat = 0
+    @State private var isHovering = false
 
-    // Debounce: don't start recording until 0.1s of hold
     private static let holdDebounce: TimeInterval = 0.1
-    // Drag-off threshold: cancel if pointer moves >50pt from center
     private static let dragCancelDistance: CGFloat = 50
 
     var body: some View {
@@ -26,74 +26,114 @@ struct VoiceInputButton: View {
             switch voiceState {
             case .hidden:
                 EmptyView()
-
             case .permissionNeeded:
                 permissionButton
-
             case .idle:
                 idleButton
-
             case .recording:
                 recordingButton
-
             case .transcribing:
                 transcribingButton
-
             case .error:
                 errorButton
             }
         }
+        .animation(.ssMicro, value: voiceState)
     }
 
     // MARK: - State Views
 
     private var permissionButton: some View {
         Button(action: onPermissionTap) {
-            Image(systemName: "mic.slash")
-                .font(.system(size: 18))
+            micIcon("mic.slash")
                 .foregroundColor(Color.ssTextSecondary)
         }
         .buttonStyle(.plain)
-        .frame(width: 28, height: 28)
         .help("Tap to enable microphone")
     }
 
     private var idleButton: some View {
-        Image(systemName: "mic.fill")
-            .font(.system(size: 18))
-            .foregroundColor(Color.ssUserOlive)
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
+        micIcon("mic.fill")
+            .foregroundColor(isHovering ? Color.ssUserOlive : Color.ssUserOlive.opacity(0.7))
+            .scaleEffect(isPressing ? 0.85 : 1.0)
+            .contentShape(Circle())
+            .onHover { isHovering = $0 }
             .gesture(holdGesture)
+            .animation(.ssMicro, value: isPressing)
+            .animation(.ssMicro, value: isHovering)
     }
 
     private var recordingButton: some View {
-        Image(systemName: "mic.fill")
-            .font(.system(size: 18))
-            .foregroundColor(Color.ssRecordingRed)
-            .scaleEffect(isPressing ? 1.15 : 1.0)
-            .opacity(isPressing ? 0.7 : 1.0)
-            .animation(.ssRecordingPulse, value: isPressing)
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
-            .gesture(holdGesture)
+        ZStack {
+            // Pulsing ring behind the mic
+            Circle()
+                .fill(Color.ssRecordingRed.opacity(0.2))
+                .frame(width: 36, height: 36)
+                .scaleEffect(pulseScale)
+
+            micIcon("mic.fill")
+                .foregroundColor(Color.ssRecordingRed)
+                .scaleEffect(1.1)
+        }
+        .contentShape(Circle())
+        .gesture(holdGesture)
+        .onAppear { startPulse() }
+        .onDisappear { pulseScale = 1.0 }
     }
 
     private var transcribingButton: some View {
-        ProgressView()
-            .controlSize(.small)
-            .frame(width: 28, height: 28)
+        ZStack {
+            Circle()
+                .fill(Color.ssUserOlive.opacity(0.15))
+                .frame(width: 28, height: 28)
+
+            ProgressView()
+                .controlSize(.small)
+                .tint(Color.ssUserOlive)
+        }
+        .frame(width: 28, height: 28)
+        .transition(.scale.combined(with: .opacity))
     }
 
     private var errorButton: some View {
-        Image(systemName: "exclamationmark.circle")
-            .font(.system(size: 18))
+        micIcon("exclamationmark.circle.fill")
             .foregroundColor(Color.ssError)
             .offset(x: shakeOffset)
+            .onAppear { runShake() }
+    }
+
+    // MARK: - Shared Icon
+
+    private func micIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 18, weight: .medium))
             .frame(width: 28, height: 28)
-            .onAppear {
-                shakeAnimation()
-            }
+    }
+
+    // MARK: - Animations
+
+    private func startPulse() {
+        pulseScale = 1.0
+        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+            pulseScale = 1.4
+        }
+    }
+
+    private func runShake() {
+        shakeOffset = 0
+        withAnimation(.linear(duration: 0.06)) { shakeOffset = 5 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            withAnimation(.linear(duration: 0.06)) { shakeOffset = -5 }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            withAnimation(.linear(duration: 0.06)) { shakeOffset = 4 }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            withAnimation(.linear(duration: 0.06)) { shakeOffset = -3 }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            withAnimation(.spring(response: 0.15, dampingFraction: 0.5)) { shakeOffset = 0 }
+        }
     }
 
     // MARK: - Hold-to-Talk Gesture
@@ -102,18 +142,16 @@ struct VoiceInputButton: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if !isPressing {
-                    // Press started
                     isPressing = true
                     pressStartTime = Date()
 
-                    // Debounce: start recording after 0.1s
                     DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDebounce) {
                         guard isPressing else { return }
                         onHoldStart()
                     }
                 }
 
-                // Drag-off cancellation: if pointer moves too far from start
+                // Drag-off cancellation
                 let distance = sqrt(
                     pow(value.translation.width, 2) + pow(value.translation.height, 2)
                 )
@@ -133,7 +171,6 @@ struct VoiceInputButton: View {
                 let holdDuration = Date().timeIntervalSince(start)
 
                 if holdDuration < 0.5 && !wasRecording {
-                    // Too short, recording never started (debounce caught it)
                     return
                 }
 
@@ -141,24 +178,5 @@ struct VoiceInputButton: View {
                     onHoldEnd()
                 }
             }
-    }
-
-    // MARK: - Shake Animation
-
-    private func shakeAnimation() {
-        let duration = 0.08
-        withAnimation(.linear(duration: duration)) { shakeOffset = 4 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            withAnimation(.linear(duration: duration)) { shakeOffset = -4 }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration * 2) {
-            withAnimation(.linear(duration: duration)) { shakeOffset = 4 }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration * 3) {
-            withAnimation(.linear(duration: duration)) { shakeOffset = -4 }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration * 4) {
-            withAnimation(.linear(duration: duration)) { shakeOffset = 0 }
-        }
     }
 }
