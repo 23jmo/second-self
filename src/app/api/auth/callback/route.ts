@@ -4,11 +4,10 @@ const BACKEND = process.env.BACKEND_URL || "http://localhost:8000";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
-  const res = await fetch(`${BACKEND}/chat`, {
+  const res = await fetch(`${BACKEND}/auth/callback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
-    signal: AbortSignal.timeout(120_000), // 2 minutes — tool use loop
   });
 
   const data = await res.text();

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from "firebase/auth";
 import { auth } from "@/lib/firebase";
 import { useFirebaseUser } from "@/hooks/useFirebaseUser";
+import { postAuthCallback } from "@/lib/api";
 import MascotFullBody from "@/components/mascot/MascotFullBody";
 import Button from "@/components/ui/Button";
 
@@ -16,6 +17,23 @@ provider.addScope("https://www.googleapis.com/auth/documents");
 provider.addScope("https://www.googleapis.com/auth/presentations");
 provider.addScope("https://www.googleapis.com/auth/drive.file");
 
+/** Extract the Google OAuth access token from a Firebase sign-in result. */
+function getGoogleAccessToken(result: Awaited<ReturnType<typeof signInWithPopup>>): string {
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  return credential?.accessToken ?? "";
+}
+
+/** Exchange Firebase tokens with the backend to create a real session. */
+async function exchangeTokens(result: Awaited<ReturnType<typeof signInWithPopup>>): Promise<{ sessionId: string; email: string }> {
+  const email = result.user.email ?? "";
+  const name = result.user.displayName ?? email;
+  const idToken = await result.user.getIdToken();
+  const googleAccessToken = getGoogleAccessToken(result);
+
+  const resp = await postAuthCallback(idToken, googleAccessToken, email, name);
+  return { sessionId: resp.session_id, email };
+}
+
 interface WelcomeScreenProps {
   onNext: () => void;
   onSession: (sessionId: string, email: string) => void;
@@ -23,34 +41,45 @@ interface WelcomeScreenProps {
 
 export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps) {
   const { user, isLoading } = useFirebaseUser();
+  const [signingIn, setSigningIn] = useState(false);
 
   // Handle redirect result when returning from Google sign-in
   useEffect(() => {
-    getRedirectResult(auth).then((result) => {
+    getRedirectResult(auth).then(async (result) => {
       if (result) {
-        onSession("firebase", result.user.email ?? "");
-        onNext();
+        try {
+          const { sessionId, email } = await exchangeTokens(result);
+          onSession(sessionId, email);
+          onNext();
+        } catch (err) {
+          console.error("Token exchange failed (redirect):", err);
+        }
       }
-    }).catch((err) => {
+    }).catch((err: unknown) => {
       console.error("Firebase redirect error:", err);
     });
   }, [onSession, onNext]);
 
   const handleClick = async () => {
+    setSigningIn(true);
     try {
       const result = await signInWithPopup(auth, provider);
-      const email = result.user.email ?? "";
-      onSession("firebase", email);
+      const { sessionId, email } = await exchangeTokens(result);
+      onSession(sessionId, email);
       onNext();
     } catch (err: unknown) {
       const firebaseErr = err as { code?: string };
-      if (firebaseErr.code === "auth/popup-closed-by-user") return;
+      if (firebaseErr.code === "auth/popup-closed-by-user") {
+        setSigningIn(false);
+        return;
+      }
       // Popup blocked — fall back to redirect
       if (firebaseErr.code === "auth/popup-blocked") {
         await signInWithRedirect(auth, provider);
         return;
       }
       console.error("Firebase sign-in error:", err);
+      setSigningIn(false);
     }
   };
 
@@ -77,8 +106,8 @@ export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps)
         </div>
 
         <div className="flex flex-col items-center gap-3 w-full">
-          <Button onClick={handleClick} disabled={isLoading}>
-            {isLoading ? "signing in..." : "let\u0027s build you"}
+          <Button onClick={handleClick} disabled={isLoading || signingIn}>
+            {isLoading || signingIn ? "signing in..." : "let\u0027s build you"}
           </Button>
           <button
             onClick={handleSkipAuth}

@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from auth.gmail_auth import get_gmail_credentials
+from auth.gmail_auth import get_gmail_credentials_from_token
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +65,11 @@ def _save_cache(
 def _build_service(access_token: str | None = None) -> Any:
     """Build an authenticated Gmail API service.
 
-    If access_token is provided, builds Credentials from it directly
-    (Firebase JS SDK web flow). Otherwise falls back to the legacy
-    get_gmail_credentials() flow.
+    Requires access_token (from Firebase JS SDK web flow).
     """
-    if access_token:
-        from auth.gmail_auth import get_gmail_credentials_from_token
-        creds = get_gmail_credentials_from_token(access_token)
-    else:
-        creds = get_gmail_credentials()
+    if not access_token:
+        raise ValueError("access_token is required for Gmail API access")
+    creds = get_gmail_credentials_from_token(access_token)
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
