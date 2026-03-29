@@ -51,9 +51,13 @@ struct ChatView: View {
             }
 
             // VNC PiP thumbnail in bottom-right
-            VNCPipView(twinState: viewModel.twinState)
-                .padding(.trailing, 16)
-                .padding(.bottom, 72) // Above the input bar
+            VNCPipView(
+                streamer: viewModel.mjpegStreamer,
+                twinState: viewModel.twinState,
+                onExpand: { viewModel.isVNCExpanded = true }
+            )
+            .padding(.trailing, 16)
+            .padding(.bottom, 72) // Above the input bar
         }
         .background(Color.ssSurface)
     }

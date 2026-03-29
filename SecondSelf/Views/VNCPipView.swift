@@ -4,14 +4,13 @@ import AppKit
 // MARK: - VNC PiP View
 
 /// Picture-in-picture VNC feed thumbnail.
-/// Native MJPEG parser using URLSession (no WKWebView, no ATS issues).
-/// Olive-green glow when Twin is working. Click to expand.
+/// Tapping expands the VNC view within the notch panel (content swap).
 struct VNCPipView: View {
+    @ObservedObject var streamer: MJPEGStreamer
     let twinState: TwinState
+    let onExpand: () -> Void
 
-    @StateObject private var streamer = MJPEGStreamer()
     @State private var isHovered: Bool = false
-    @State private var expandedWindow: NSWindow?
 
     private let thumbnailSize = CGSize(width: 140, height: 90)
 
@@ -69,68 +68,172 @@ struct VNCPipView: View {
             isHovered = hovering
         }
         .onTapGesture {
-            openExpandedVNCWindow()
+            onExpand()
         }
-        .onAppear {
-            streamer.start()
-        }
-        .onDisappear {
-            streamer.stop()
-        }
-    }
-
-
-    // MARK: - Expanded VNC Window
-
-    private func openExpandedVNCWindow() {
-        if expandedWindow != nil {
-            expandedWindow?.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let windowSize = CGSize(width: 800, height: 500)
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: windowSize),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Second Self — Twin's Desktop"
-        window.backgroundColor = NSColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1.0)
-        window.isReleasedWhenClosed = false
-        window.center()
-
-        let hostingView = NSHostingView(
-            rootView: ExpandedVNCView(streamer: streamer)
-        )
-        window.contentView = hostingView
-        window.makeKeyAndOrderFront(nil)
-        expandedWindow = window
     }
 }
 
-// MARK: - Expanded VNC View
+// MARK: - VNC Expanded Content View
 
-struct ExpandedVNCView: View {
+/// Full VNC desktop view shown inside the notch panel when PiP is tapped.
+/// Shows the MJPEG stream (passive view) plus a "Take Control" button that
+/// launches TigerVNC for full remote control. TigerVNC handles mouse, keyboard,
+/// and clipboard natively via the VNC/RFB protocol.
+struct VNCExpandedContentView: View {
     @ObservedObject var streamer: MJPEGStreamer
+    let twinState: TwinState
+    let currentToolAction: String
+    let onBack: () -> Void
+
+    @State private var lastLaunchTime: Date = .distantPast
 
     var body: some View {
-        Group {
-            if let image = streamer.currentFrame {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                VStack(spacing: 8) {
-                    Text("Connecting to Twin's desktop...")
-                        .font(.system(size: 14))
-                        .foregroundColor(Color.ssTextSecondary)
+        VStack(spacing: 0) {
+            // Stream area
+            GeometryReader { geo in
+                ZStack(alignment: .bottom) {
+                    // MJPEG feed (passive view)
+                    streamContent
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(
+                                    twinState == .working ? Color.ssTwinGreen : Color.ssBorder,
+                                    lineWidth: twinState == .working ? 1.5 : 0.5
+                                )
+                        )
+                        .shadow(
+                            color: twinState == .working
+                                ? Color.ssTwinGreen.opacity(0.3)
+                                : Color.black.opacity(0.1),
+                            radius: twinState == .working ? 12 : 2
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            launchTigerVNC()
+                        }
+
+                    VStack(spacing: 0) {
+                        Spacer()
+
+                        // "Take Control" button overlay
+                        Button(action: launchTigerVNC) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "cursorarrow.click.2")
+                                    .font(.system(size: 11, weight: .medium))
+                                Text("Take Control")
+                                    .font(.system(size: 12, weight: .medium))
+                            }
+                            .foregroundColor(Color.ssTextPrimary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(
+                                Capsule()
+                                    .fill(Color.ssTwinGreen.opacity(0.9))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
+
+                        // Bottom bar with current action
+                        HStack {
+                            if !currentToolAction.isEmpty {
+                                Text(currentToolAction)
+                                    .font(.system(size: 11))
+                                    .italic()
+                                    .foregroundColor(Color.ssTextSecondary)
+                            } else if twinState == .idle {
+                                Text("Ready — tap to take control")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Color.ssTextSecondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.ssBackground.opacity(0.8))
+                    }
+
+                    // Task complete toast
+                    if twinState == .complete {
+                        Button(action: onBack) {
+                            HStack(spacing: 6) {
+                                Text("Task complete")
+                                    .font(.system(size: 12, weight: .medium))
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .foregroundColor(Color.ssBackground)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.ssTwinGreen))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 60)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
             }
+            .padding(12)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.ssBackground)
+        .background(Color.ssSurface)
     }
+
+    // MARK: - Stream Content
+
+    @ViewBuilder
+    private var streamContent: some View {
+        if let image = streamer.currentFrame {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            VStack(spacing: 12) {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Connecting to Twin's desktop...")
+                    .font(.system(size: 13))
+                    .foregroundColor(Color.ssTextSecondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.ssBackground)
+        }
+    }
+
+    // MARK: - Launch TigerVNC
+
+    private func launchTigerVNC() {
+        // Debounce: ignore taps within 2 seconds of last launch
+        guard Date().timeIntervalSince(lastLaunchTime) > 2.0 else { return }
+        lastLaunchTime = Date()
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", "TigerVNC", "--args", "localhost:5901"]
+
+        do {
+            try process.run()
+            print("[VNC] Launched TigerVNC for remote control")
+        } catch {
+            print("[VNC] Failed to launch TigerVNC: \(error)")
+            if let url = URL(string: "vnc://localhost:5901") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+}
+
+// MARK: - Stream State
+
+enum StreamState: Equatable {
+    case disconnected
+    case connecting
+    case live
+    case reconnecting
+    case error
 }
 
 // MARK: - MJPEG Stream Parser
@@ -140,6 +243,7 @@ struct ExpandedVNCView: View {
 /// No WKWebView needed, no ATS restrictions.
 final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
     @Published var currentFrame: NSImage?
+    @Published var streamState: StreamState = .disconnected
 
     private var session: URLSession?
     private var task: URLSessionDataTask?
@@ -160,6 +264,7 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
         guard !isRunning else { return }
         isRunning = true
         print("[VNC-PiP] Starting MJPEG streamer...")
+        DispatchQueue.main.async { self.streamState = .connecting }
         connect()
     }
 
@@ -171,12 +276,16 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
         session = nil
         retryTimer?.invalidate()
         retryTimer = nil
+        DispatchQueue.main.async {
+            self.streamState = .disconnected
+            self.currentFrame = nil
+        }
     }
 
     private func connect() {
         guard isRunning else { return }
 
-        let url = URL(string: ServerConfig.agentStreamURL)!
+        guard let url = URL(string: ServerConfig.agentStreamURL) else { return }
         print("[VNC-PiP] Connecting to \(url)...")
 
         // Invalidate previous session to prevent leaks
@@ -206,11 +315,16 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
         }
         if isRunning {
             buffer.removeAll()
-            // Retry after delay
             DispatchQueue.main.async { [weak self] in
+                self?.streamState = .reconnecting
                 self?.retryTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+                    self?.streamState = .connecting
                     self?.connect()
                 }
+            }
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.streamState = .disconnected
             }
         }
     }
@@ -223,6 +337,11 @@ final class MJPEGStreamer: NSObject, ObservableObject, URLSessionDataDelegate {
     ) {
         if let http = response as? HTTPURLResponse {
             print("[VNC-PiP] Connected! HTTP \(http.statusCode)")
+            if http.statusCode == 200 {
+                DispatchQueue.main.async { [weak self] in
+                    self?.streamState = .live
+                }
+            }
         }
         completionHandler(.allow)
     }
