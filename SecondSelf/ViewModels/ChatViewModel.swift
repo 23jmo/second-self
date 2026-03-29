@@ -1,10 +1,11 @@
 import Foundation
 import Combine
+import os
 
 // MARK: - Chat View Model
 
-/// Main view model managing chat messages, Twin state, and SSE connection
-/// to the orchestrator at http://localhost:8420/chat.
+/// Main view model managing chat messages, Twin state, SSE connection,
+/// and voice input state for the orchestrator at http://localhost:8420/chat.
 final class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var twinState: TwinState = .idle
@@ -12,6 +13,7 @@ final class ChatViewModel: ObservableObject {
     @Published var inputText: String = ""
     /// VNC feed stays visible once the agent starts working, until user dismisses.
     @Published var showVNCFeed: Bool = false
+    @Published var voiceState: VoiceInputState = .hidden
 
     // The last tool action name from SSE events, shown in VNC bottom bar
     @Published var currentToolAction: String = ""
@@ -30,6 +32,13 @@ final class ChatViewModel: ObservableObject {
     private var currentTwinMessageID: UUID?
     private(set) var streamingComponentID: UUID?
     private let audioManager = AudioManager()
+
+    // Voice input
+    let audioRecorder = AudioRecorder()
+    private let elevenLabs = ElevenLabsService()
+    private var voiceErrorTimer: Task<Void, Never>?
+    private var currentTranscriptionFile: URL?
+    private let voiceLogger = Logger(subsystem: "com.secondself.app", category: "VoiceInput")
 
     private lazy var urlSession: URLSession = {
         let config = URLSessionConfiguration.default
@@ -51,6 +60,9 @@ final class ChatViewModel: ObservableObject {
             timestamp: Date()
         )
         messages.append(welcome)
+
+        // Check voice availability (API key in .env)
+        checkVoiceAvailability()
     }
 
     // MARK: - VNC Feed
@@ -348,9 +360,127 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Voice Input
+
+    /// Check if ElevenLabs API key is present. Sets initial voice state.
+    func checkVoiceAvailability() {
+        voiceState = elevenLabs.hasAPIKey ? .idle : .hidden
+    }
+
+    /// Pre-flight mic permission check. Call on VoiceInputButton appear.
+    func checkMicPermission() {
+        guard voiceState != .hidden else { return }
+        audioRecorder.checkPermission()
+        switch audioRecorder.permissionState {
+        case .notDetermined:
+            voiceState = .permissionNeeded
+        case .authorized:
+            if voiceState == .permissionNeeded { voiceState = .idle }
+        case .denied:
+            voiceState = .permissionNeeded
+        }
+    }
+
+    /// Request mic permission (from a tap, NOT during hold gesture).
+    func requestMicPermission() {
+        audioRecorder.requestPermission { [weak self] granted in
+            guard let self else { return }
+            if granted {
+                self.voiceState = .idle
+            } else {
+                self.setVoiceError("Microphone access denied. Enable in System Settings > Privacy.")
+            }
+        }
+    }
+
+    /// Start recording audio. Called when hold gesture fires after debounce.
+    func startRecording() {
+        guard voiceState == .idle else { return }
+        audioRecorder.startRecording()
+        voiceState = .recording
+        voiceLogger.info("Voice recording started")
+    }
+
+    /// Stop recording and begin transcription.
+    func stopRecording() {
+        guard voiceState == .recording else { return }
+
+        guard let fileURL = audioRecorder.stopRecording() else {
+            // Recording was too short
+            setVoiceError("Hold longer to record")
+            return
+        }
+
+        voiceState = .transcribing
+        currentTranscriptionFile = fileURL
+        voiceLogger.info("Voice recording stopped, transcribing...")
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let text = try await self.elevenLabs.transcribe(fileURL: fileURL)
+                self.handleTranscription(text: text)
+            } catch let error as ElevenLabsService.STTError {
+                self.setVoiceError(error.errorDescription ?? "Transcription failed")
+            } catch {
+                self.setVoiceError("Transcription failed")
+            }
+            // Clean up the audio file
+            if let file = self.currentTranscriptionFile {
+                self.audioRecorder.cleanUpFile(at: file)
+                self.currentTranscriptionFile = nil
+            }
+        }
+    }
+
+    /// Cancel an active recording without transcribing.
+    func cancelVoiceRecording() {
+        voiceErrorTimer?.cancel()
+        voiceErrorTimer = nil
+
+        if voiceState == .recording {
+            audioRecorder.cancelRecording()
+            voiceLogger.info("Voice recording cancelled")
+        }
+
+        // Clean up any in-flight transcription file
+        if let file = currentTranscriptionFile {
+            audioRecorder.cleanUpFile(at: file)
+            currentTranscriptionFile = nil
+        }
+
+        // Reset to idle (or hidden if no key)
+        voiceState = elevenLabs.hasAPIKey ? .idle : .hidden
+    }
+
+    private func handleTranscription(text: String) {
+        if inputText.isEmpty {
+            inputText = text
+        } else {
+            inputText += " " + text
+        }
+        voiceState = .idle
+        voiceLogger.info("Transcription inserted: \(text.prefix(40))...")
+    }
+
+    private func setVoiceError(_ message: String) {
+        voiceState = .error(message)
+        voiceLogger.warning("Voice error: \(message)")
+
+        // Auto-clear error after 2 seconds
+        voiceErrorTimer?.cancel()
+        voiceErrorTimer = Task {
+            try? await Task.sleep(for: .seconds(2))
+            if case .error = voiceState {
+                voiceState = .idle
+            }
+        }
+    }
+
     deinit {
         sseTask?.cancel()
         reconnectTimer?.invalidate()
+        voiceErrorTimer?.cancel()
     }
 }
 

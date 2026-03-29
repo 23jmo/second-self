@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pythonPath: String?
     private var envVars: [String: String] = [:]
 
+    /// Shared accessor for .env variables. Available after applicationDidFinishLaunching.
+    /// Used by ElevenLabsService to read ELEVENLABS_API_KEY without duplicating .env parsing.
+    static private(set) var sharedEnvVars: [String: String] = [:]
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -92,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+
+        // Expose env vars to other services (e.g. ElevenLabsService reads ELEVENLABS_API_KEY)
+        AppDelegate.sharedEnvVars = envVars
 
         let home = envVars["HOME"] ?? NSHomeDirectory()
         let candidates = [

@@ -92,6 +92,9 @@ final class NotchOverlayController: NSObject {
     }
 
     func collapse() {
+        // Cancel any active voice recording before collapsing
+        chatViewModel.cancelVoiceRecording()
+
         // Staged collapse: content fades first (200ms), then notch shape compacts
         chatViewModel.expansionStage = 0
         Task {
