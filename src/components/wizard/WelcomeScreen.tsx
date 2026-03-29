@@ -37,12 +37,6 @@ export default function WelcomeScreen({ onNext, onSession }: WelcomeScreenProps)
   }, [onSession, onNext]);
 
   const handleClick = async () => {
-    if (user) {
-      onSession("firebase", user.email ?? "");
-      onNext();
-      return;
-    }
-
     try {
       const result = await signInWithPopup(auth, provider);
       const email = result.user.email ?? "";
