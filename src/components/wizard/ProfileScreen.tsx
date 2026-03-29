@@ -11,13 +11,27 @@ interface ProfileScreenProps {
 }
 
 export default function ProfileScreen({ name, role, profile, onNext }: ProfileScreenProps) {
-  // Extract tone pills from profile voice data
+  const isKnown = (v: string | undefined) => v && v.toLowerCase() !== "unknown";
+
+  // Identity
+  const displayName = profile?.identity?.name || name;
+  const displayRole = isKnown(profile?.identity?.role) ? profile!.identity.role : isKnown(role) ? role : null;
+  const displayCompany = isKnown(profile?.identity?.company) ? profile!.identity.company : null;
+
+  // Tone pills
   const tonePills = profile?.voice?.tone
     ? profile.voice.tone.split(/[,/&]+/).map((t) => t.trim()).filter(Boolean)
     : ["friendly"];
 
-  // Show tools from top collaborators or active projects as proxy
-  const toolPills = profile?.context?.active_projects?.slice(0, 3) ?? [];
+  // Focus areas from active projects
+  const focusPills = profile?.context?.active_projects?.slice(0, 4) ?? [];
+
+  // Signature phrases
+  const phrasePills = profile?.voice?.signature_phrases?.slice(0, 3) ?? [];
+
+  // Response style
+  const responseStyle = profile?.behavior?.response_style;
+  const workHours = profile?.behavior?.work_hours;
 
   return (
     <div className="flex flex-col items-center gap-6 w-full max-w-[681px] px-4">
@@ -38,26 +52,15 @@ export default function ProfileScreen({ name, role, profile, onNext }: ProfileSc
         {/* Profile card */}
         <div className="border-3 border-primary rounded-[15px] w-full max-w-[408px] p-6 sm:p-8">
           <div className="flex flex-col gap-4 sm:gap-5">
-            <ProfileRow label="name" value={profile?.identity?.name || name} />
-            <ProfileRow label="role" value={profile?.identity?.role || role} />
-            <div className="flex items-center gap-4 sm:gap-8">
-              <span className="text-sm sm:text-base font-normal text-black w-10 text-center shrink-0">tone</span>
-              <div className="flex gap-3 sm:gap-4 flex-wrap">
-                {tonePills.map((t) => (
-                  <Pill key={t}>{t}</Pill>
-                ))}
-              </div>
-            </div>
-            {toolPills.length > 0 && (
-              <div className="flex items-center gap-4 sm:gap-8">
-                <span className="text-sm sm:text-base font-normal text-black w-10 text-center shrink-0">focus</span>
-                <div className="flex gap-3 sm:gap-4 flex-wrap">
-                  {toolPills.map((t) => (
-                    <Pill key={t}>{t}</Pill>
-                  ))}
-                </div>
-              </div>
+            <ProfileRow label="name" value={displayName} />
+            {displayRole && (
+              <ProfileRow label="role" value={displayCompany ? `${displayRole} @ ${displayCompany}` : displayRole} />
             )}
+            <PillRow label="tone" items={tonePills} />
+            {focusPills.length > 0 && <PillRow label="focus" items={focusPills} />}
+            {phrasePills.length > 0 && <PillRow label="vocab" items={phrasePills} />}
+            {isKnown(responseStyle) && <ProfileRow label="style" value={responseStyle!} />}
+            {isKnown(workHours) && <ProfileRow label="hours" value={workHours!} />}
           </div>
         </div>
 
@@ -70,8 +73,21 @@ export default function ProfileScreen({ name, role, profile, onNext }: ProfileSc
 function ProfileRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-4 sm:gap-8">
-      <span className="text-sm sm:text-base font-normal text-black w-10 text-center shrink-0">{label}</span>
+      <span className="text-sm sm:text-base font-normal text-black w-14 text-right shrink-0">{label}</span>
       <span className="text-sm sm:text-base font-normal text-black">{value}</span>
+    </div>
+  );
+}
+
+function PillRow({ label, items }: { label: string; items: string[] }) {
+  return (
+    <div className="flex items-start gap-4 sm:gap-8">
+      <span className="text-sm sm:text-base font-normal text-black w-14 text-right shrink-0 pt-0.5">{label}</span>
+      <div className="flex gap-2 sm:gap-3 flex-wrap">
+        {items.map((t) => (
+          <Pill key={t}>{t}</Pill>
+        ))}
+      </div>
     </div>
   );
 }
