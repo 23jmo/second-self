@@ -12,7 +12,7 @@ interface CompleteScreenProps {
 
 export default function CompleteScreen({ name, onBack }: CompleteScreenProps) {
   const handleDownload = () => {
-    window.open("https://github.com/23jmo/second-self/releases/latest/download/SecondSelf.pkg", "_blank");
+    window.open("https://github.com/23jmo/second-self-releases/releases/latest/download/SecondSelf.pkg", "_blank");
   };
 
   return (
