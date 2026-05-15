@@ -1,0 +1,46 @@
+{
+  "date": "2026-03-31",
+  "window": "7d",
+  "metrics": {
+    "commits": 70,
+    "contributors": 3,
+    "prs_merged": 15,
+    "insertions": 47326,
+    "deletions": 7925,
+    "net_loc": 39401,
+    "test_loc": 6682,
+    "test_ratio": 0.14,
+    "active_days": 2,
+    "sessions": 14,
+    "deep_sessions": 3,
+    "avg_session_minutes": 37,
+    "loc_per_session_hour": 4600,
+    "feat_pct": 0.43,
+    "fix_pct": 0.29,
+    "peak_hour": 3,
+    "ai_assisted_commits": 0
+  },
+  "authors": {
+    "Johnathan Mo": { "commits": 56, "insertions": 27944, "deletions": 4441, "test_ratio": 0.03, "top_area": "SecondSelf/" },
+    "vivianknee": { "commits": 9, "insertions": 5593, "deletions": 2901, "test_ratio": 0.06, "top_area": "src/components/" },
+    "vin124": { "commits": 5, "insertions": 13789, "deletions": 583, "test_ratio": 0.39, "top_area": "analyze/" }
+  },
+  "version_range": ["0.0.0", "0.0.0"],
+  "streak_days": 0,
+  "tweetable": "Week of Mar 24: 70 commits (3 contributors), 47.3k LOC, 14% tests, 15 PRs, peak: 3am | 2-day hackathon sprint",
+  "test_health": {
+    "total_test_files": 17,
+    "tests_added_this_period": 17,
+    "regression_test_commits": 0,
+    "test_files_changed": 21
+  },
+  "skill_usage": {
+    "ship": 8,
+    "autoplan": 8,
+    "review": 6,
+    "plan-ceo-review": 4,
+    "plan-design-review": 4,
+    "codex": 2,
+    "browse": 1
+  }
+}

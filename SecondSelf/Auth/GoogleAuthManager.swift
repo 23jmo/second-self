@@ -1,25 +1,24 @@
 import Foundation
-import AuthenticationServices
 import AppKit
 
 // MARK: - Google Auth Manager
 
-/// Handles Auth0-based Google OAuth via ASWebAuthenticationSession.
-/// Opens the local FastAPI endpoint (localhost:8000/auth/login) which redirects
-/// to Auth0's /authorize endpoint for Google sign-in. After auth, polls for
-/// the session in .session_store.json.
-final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+/// Handles Firebase-routed Google OAuth.
+/// Opens the local FastAPI login page (localhost:8000/auth/login) in the user's
+/// default browser, then polls for the session in .session_store.json.
+final class GoogleAuthManager: NSObject, ObservableObject {
     @Published var isAuthenticated: Bool = false
     @Published var isAuthenticating: Bool = false
     @Published var errorMessage: String?
     @Published var userName: String?
 
-    /// Callback fired when auth succeeds — app delegate uses this to show the notch.
+    /// Callback fired when auth succeeds — app delegate uses this to start the orchestrator.
     var onAuthenticated: (() -> Void)?
 
-    private var authSession: ASWebAuthenticationSession?
     private var pollTimer: Timer?
     private let sessionStorePath: String
+    /// Session count when sign-in started — used to detect new sessions during polling.
+    private var sessionCountAtSignInStart: Int = 0
 
     override init() {
         // Find .session_store.json — check known install locations first, then walk up from binary
@@ -82,57 +81,23 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
         isAuthenticating = true
         errorMessage = nil
 
-        // Firebase login page handles Google OAuth popup, gets real access token
+        // Open login page in the user's real browser — ASWebAuthenticationSession's
+        // sandboxed browser blocks Firebase popups and loses redirect state,
+        // so we use the default browser which handles OAuth correctly.
         guard let authURL = URL(string: "http://localhost:8000/auth/login") else {
             errorMessage = "Invalid auth URL"
             isAuthenticating = false
             return
         }
 
-        let session = ASWebAuthenticationSession(
-            url: authURL,
-            callbackURLScheme: "secondself"
-        ) { [weak self] callbackURL, error in
-            Task { @MainActor in
-                self?.handleAuthResult(callbackURL: callbackURL, error: error)
-            }
-        }
+        // Snapshot current session count so polling detects only NEW sessions
+        sessionCountAtSignInStart = currentSessionCount()
 
-        session.presentationContextProvider = self
-        session.prefersEphemeralWebBrowserSession = false
-        authSession = session
+        NSWorkspace.shared.open(authURL)
 
-        if !session.start() {
-            errorMessage = "Could not start auth session"
-            isAuthenticating = false
-        }
-
-        // Poll for session file — Firebase login POSTs tokens to backend
+        // Poll for session file — login page POSTs tokens to backend,
+        // which writes .session_store.json. We detect it here.
         startPollingForSession()
-    }
-
-    // MARK: - ASWebAuthenticationPresentationContextProviding
-
-    @MainActor
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        NSApp.keyWindow ?? NSApp.windows.first ?? ASPresentationAnchor()
-    }
-
-    // MARK: - Handle Auth Result
-
-    private func handleAuthResult(callbackURL: URL?, error: Error?) {
-        // The browser might close without a callback (user closes tab).
-        // That's fine — we're polling for the session file.
-        if let error = error as? ASWebAuthenticationSessionError,
-           error.code == .canceledLogin {
-            // User cancelled — stop polling but don't show error
-            isAuthenticating = false
-            stopPolling()
-            return
-        }
-
-        // If we got a callback, the session should already be saved by the backend.
-        // Poll will pick it up.
     }
 
     // MARK: - Poll for Session
@@ -159,13 +124,22 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
         pollTimer = nil
     }
 
+    private func currentSessionCount() -> Int {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: sessionStorePath)),
+              let store = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return 0
+        }
+        return store.count
+    }
+
     private func checkForNewSession() {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: sessionStorePath)),
               let store = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              !store.isEmpty else {
+              store.count > sessionCountAtSignInStart else {
             return
         }
 
+        // A new session appeared — grab the latest one
         if let lastKey = store.keys.sorted().last,
            let session = store[lastKey] as? [String: Any],
            let name = session["name"] as? String {
@@ -173,8 +147,6 @@ final class GoogleAuthManager: NSObject, ObservableObject, ASWebAuthenticationPr
             isAuthenticated = true
             isAuthenticating = false
             stopPolling()
-            authSession?.cancel()
-            authSession = nil
             onAuthenticated?()
             notifyOrchestratorOfAuth()
         }
